@@ -30,6 +30,11 @@ def run(cmd: list[str], *, cwd: Path | None = None) -> None:
     subprocess.run(cmd, cwd=cwd, check=True)
 
 
+def configure_git_identity(docs_dir: Path) -> None:
+    run(["git", "config", "user.name", "github-actions[bot]"], cwd=docs_dir)
+    run(["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"], cwd=docs_dir)
+
+
 def main() -> int:
     args = parse_args()
     docs_dir = args.docs_dir.resolve()
@@ -44,6 +49,7 @@ def main() -> int:
         else f"https://github.com/{DOCS_REPO}.git"
     )
 
+    configure_git_identity(docs_dir)
     run(["git", "remote", "set-url", "origin", remote], cwd=docs_dir)
     run(["git", "fetch", "origin", args.base_branch, "--depth", "1"], cwd=docs_dir)
     run(["git", "checkout", "-B", args.preview_branch, f"origin/{args.base_branch}"], cwd=docs_dir)
