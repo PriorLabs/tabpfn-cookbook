@@ -1,0 +1,109 @@
+---
+title: "Faster Inference with KV Cache"
+description: "Get a quick introduction into faster inference with fit_with_cache"
+cookbookTags:
+  - performance
+---
+*Build the model's internal representation once at fit time, reuse it at predict.*
+
+By default TabPFN recomputes its representation of the training set on every call to `predict`. The `fit_with_cache` mode does that work once, during `fit`, and caches the result, so the first prediction is noticeably faster. This short notebook benchmarks the two modes side by side on the same data.
+
+## Setup
+
+*Installing TabPFN and scikit-learn.*
+
+```python
+!pip install tabpfn scikit-learn
+```
+
+## Imports
+
+*The classifier, a dataset, and timing utilities.*
+
+```python
+import time
+import os
+
+from google.colab import userdata
+from sklearn.datasets import make_classification
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+
+from tabpfn import TabPFNClassifier
+```
+
+## Authenticating with a Token
+
+*Setting `TABPFN_TOKEN` so the weights can be downloaded.*
+
+```python
+os.environ["TABPFN_TOKEN"] = userdata.get('TABPFN_TOKEN')
+```
+
+## Data and Split
+
+*A synthetic 5,000-row classification set; a small test slice keeps prediction quick.*
+
+```python
+X, y = make_classification(n_samples=5000, n_features=20, random_state=42, n_classes=2)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.05, random_state=42, stratify=y
+)
+```
+
+## The Benchmark Function
+
+*Timing fit and predict.*
+
+`benchmark_tabpfn` fits, times the first prediction. The first prediction is where the cache pays off.
+
+```python
+def benchmark_tabpfn(clf: TabPFNClassifier, name: str, n_predict_calls = 1) -> None:
+    t0 = time.perf_counter()
+    clf.fit(X_train, y_train)
+    t_fit = time.perf_counter() - t0
+
+    t1 = time.perf_counter()
+    for _ in range(n_predict_calls):
+        preds = clf.predict(X_test)
+    t_pred = time.perf_counter() - t1
+
+    print(
+        f"[{name}] fit: {t_fit:.4f}s | predict: {t_pred:.4f}s"
+    )
+```
+
+## With and Without the Cache
+
+*Comparing default mode against `fit_with_cache`.*
+
+The baseline recomputes the training representation at predict time. With `fit_with_cache`, that work happens during `fit`, so the first prediction is faster.
+
+```python
+# Baseline: no cache
+clf_no_cache = (
+    TabPFNClassifier()
+)
+benchmark_tabpfn(clf_no_cache, "no_cache")
+
+# With KV cache: cache is built during `fit`, so first predict is faster
+clf_kv = TabPFNClassifier(fit_mode="fit_with_cache")
+benchmark_tabpfn(clf_kv, "kv_cache")
+```
+
+## The Importance of Cache with Repeated `predict` Calls
+
+```python
+N_PREDICT_CALLS = 10
+
+# Baseline: no cache
+clf_no_cache = (
+    TabPFNClassifier()
+)
+benchmark_tabpfn(clf_no_cache, "no_cache", n_predict_calls = N_PREDICT_CALLS)
+
+# With cache: the multiple predict calls are easily handled
+clf_kv = TabPFNClassifier(fit_mode="fit_with_cache")
+benchmark_tabpfn(clf_kv, "kv_cache", n_predict_calls = N_PREDICT_CALLS)
+```

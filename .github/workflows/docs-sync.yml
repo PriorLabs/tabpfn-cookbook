@@ -1,0 +1,137 @@
+name: Validate cookbooks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    paths:
+      - "notebooks/**"
+      - "markdowns/**"
+      - "visuals/**"
+      - "scripts/**"
+      - "requirements.txt"
+      - ".github/workflows/docs-sync.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "notebooks/**"
+      - "markdowns/**"
+      - "visuals/**"
+      - "scripts/**"
+      - "requirements.txt"
+      - ".github/workflows/docs-sync.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.action != 'closed'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install validation dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate changed cookbooks
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/validate.py --base ${{ github.event.pull_request.base.sha }}
+
+      - name: Validate all cookbooks
+        if: github.event_name == 'push'
+        run: python3 scripts/validate.py --all
+
+  publish-docs-preview:
+    name: Publish Mintlify preview branch
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install validation dependencies
+        run: pip install -r requirements.txt
+
+      - name: Clone docs repository
+        env:
+          DOCS_REPO_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
+          DOCS_PREVIEW_BRANCH: ${{ vars.DOCS_PREVIEW_BRANCH }}
+        run: |
+          if [ -z "$DOCS_PREVIEW_BRANCH" ]; then
+            echo "Repository variable DOCS_PREVIEW_BRANCH is not set." >&2
+            exit 1
+          fi
+          git clone --depth=1 --branch "$DOCS_PREVIEW_BRANCH" \
+            "https://x-access-token:${DOCS_REPO_TOKEN}@github.com/PriorLabs/docs.git" \
+            /tmp/docs
+
+      - name: Create docs preview branch for cookbook PR
+        env:
+          DOCS_REPO_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
+        run: |
+          python3 scripts/publish_docs_preview.py \
+            --docs-dir /tmp/docs \
+            --base-branch "${{ vars.DOCS_PREVIEW_BRANCH }}" \
+            --preview-branch "cookbook/pr-${{ github.event.pull_request.number }}" \
+            --cookbooks-repo "${{ github.event.pull_request.head.repo.full_name }}" \
+            --cookbooks-ref "${{ github.event.pull_request.head.ref }}" \
+            --pr-number "${{ github.event.pull_request.number }}"
+
+      - name: Trigger Mintlify preview deployment
+        env:
+          MINTLIFY_API_KEY: ${{ secrets.MINTLIFY_API_KEY }}
+          MINTLIFY_PROJECT_ID: ${{ secrets.MINTLIFY_PROJECT_ID }}
+          PREVIEW_BRANCH: cookbook/pr-${{ github.event.pull_request.number }}
+        run: |
+          curl --fail-with-body -sS -X POST \
+            "https://api.mintlify.com/v1/project/preview/${MINTLIFY_PROJECT_ID}" \
+            -H "Authorization: Bearer ${MINTLIFY_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{\"branch\":\"${PREVIEW_BRANCH}\"}"
+
+  refresh-docs-preview:
+    name: Refresh staging preview after merge
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Trigger Mintlify preview on staging docs branch
+        env:
+          MINTLIFY_API_KEY: ${{ secrets.MINTLIFY_API_KEY }}
+          MINTLIFY_PROJECT_ID: ${{ secrets.MINTLIFY_PROJECT_ID }}
+          DOCS_PREVIEW_BRANCH: ${{ vars.DOCS_PREVIEW_BRANCH }}
+        run: |
+          if [ -z "$DOCS_PREVIEW_BRANCH" ]; then
+            echo "Repository variable DOCS_PREVIEW_BRANCH is not set." >&2
+            exit 1
+          fi
+          curl --fail-with-body -sS -X POST \
+            "https://api.mintlify.com/v1/project/preview/${MINTLIFY_PROJECT_ID}" \
+            -H "Authorization: Bearer ${MINTLIFY_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{\"branch\":\"${DOCS_PREVIEW_BRANCH}\"}"
+          echo "Redeployed staging preview branch ${DOCS_PREVIEW_BRANCH} (cookbooks from prior-cookbook main)."
+
+  cleanup-docs-preview:
+    name: Delete cookbook PR preview branch
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    steps:
+      - name: Delete docs preview branch
+        env:
+          DOCS_REPO_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
+          PREVIEW_BRANCH: cookbook/pr-${{ github.event.pull_request.number }}
+        run: |
+          git clone --depth=1 --branch main \
+            "https://x-access-token:${DOCS_REPO_TOKEN}@github.com/PriorLabs/docs.git" \
+            /tmp/docs
+          cd /tmp/docs
+          git push origin --delete "$PREVIEW_BRANCH" || echo "Preview branch already deleted."
