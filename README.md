@@ -163,22 +163,26 @@ Pull requests and pushes to `main` run `.github/workflows/docs-sync.yml`:
 Runs on every cookbook PR update and every push to `main`. Checks notebooks, markdown, and author blocks.
 
 ### Job 2 — `publish-docs-preview` (PRs only)
-After validation passes:
+After validation passes, **on every PR commit** (`synchronize`):
 
-1. Clones your **staging docs branch** (`DOCS_PREVIEW_BRANCH` — the branch that already has the fetch-at-build setup).
-2. Creates/updates a **per-PR branch** on `docs`, e.g. `cookbook/pr-42`.
-3. Commits only `.cookbooks-source.json` pointing at the PR’s cookbook repo + branch (works for forks).
-4. Triggers a **Mintlify preview** for that `cookbook/pr-*` branch.
+1. Clones your staging docs branch (`DOCS_PREVIEW_BRANCH`).
+2. Creates/updates `cookbook/pr-<N>` on `docs`.
+3. **Copies this PR’s `markdowns/*.mdx` into `docs/cookbook/`**, runs `npm run sync`, and commits the result.
+4. Triggers a Mintlify preview for `cookbook/pr-<N>`.
 
-When Mintlify builds that branch, `fetch-cookbooks.mjs` reads `.cookbooks-source.json` and pulls `markdowns/` from the **PR branch** (not `main`).
+Mintlify only serves files on the docs branch — it cannot fetch private cookbook repos — so CI materializes the markdown into the preview branch. Fork PRs work because Actions checks out the PR head.
 
 ### Job 3 — `refresh-docs-preview` (merge to `main` only)
-After cookbooks land on `prior-cookbook` `main`, redeploys your **staging** docs branch (`DOCS_PREVIEW_BRANCH`). That branch has no `.cookbooks-source.json`, so the build pulls cookbooks from `prior-cookbook` `main`.
+After cookbooks land on `main`:
+
+1. Copies **`main`’s** `markdowns/` onto `DOCS_PREVIEW_BRANCH`.
+2. Runs sync and pushes.
+3. Triggers a Mintlify preview for that staging docs branch.
 
 ### Job 4 — `cleanup-docs-preview` (PR closed)
 Deletes the temporary `cookbook/pr-*` branch on `docs`.
 
-**Job 2 vs job 3:** Job 2 is *per open PR* → temporary preview with that PR’s cookbooks. Job 3 is *after merge* → refresh your long-lived staging preview with the latest cookbooks on `main`.
+**Job 2 vs job 3:** Job 2 = temporary preview of *this PR’s* cookbooks. Job 3 = refresh long-lived staging with cookbooks from *main*.
 
 ### Repository secrets and variables
 
@@ -186,12 +190,10 @@ Configure in **Settings → Secrets and variables → Actions** on `prior-cookbo
 
 | Name | Type | Purpose |
 |------|------|---------|
-| `DOCS_REPO_TOKEN` | **Secret** | Push preview branches to `PriorLabs/docs` |
+| `DOCS_REPO_TOKEN` | **Secret** | Push preview/staging branches to `PriorLabs/docs` |
 | `MINTLIFY_API_KEY` | **Secret** | Mintlify admin API key (`mint_…`) |
 | `MINTLIFY_PROJECT_ID` | **Secret** | Mintlify project ID |
-| `DOCS_PREVIEW_BRANCH` | **Variable** | Your staging docs branch (base for previews + target for post-merge redeploy) |
-
-On `PriorLabs/docs`, set `COOKBOOKS_GITHUB_TOKEN` if cookbook sources are private.
+| `DOCS_PREVIEW_BRANCH` | **Variable** | Staging docs branch (base for PR previews + target after merge) |
 
 Validation rules:
 
