@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Convert notebooks into Mintlify-ready markdown files.
 
-Author blocks are injected automatically when ``authors`` is set in frontmatter.
+Author blocks and Colab buttons are injected automatically from frontmatter.
 For markdown-only recipes, use ``process_markdown.py`` instead.
 """
 
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from pathlib import Path
 
@@ -17,9 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from cookbook_utils import (
     cell_source,
+    discover_slug_paths,
     ensure_colab_url,
     process_markdown_content,
     transform_markdown_for_mintlify,
+    try_split_frontmatter,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,23 +42,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def split_frontmatter(text: str) -> tuple[str | None, str]:
-    match = re.match(r"^---\r?\n([\s\S]*?)\r?\n---\r?\n?", text.strip())
-    if not match:
-        return None, text
-    return match.group(0).strip(), text[match.end() :].lstrip("\n")
-
-
-def discover_notebooks(slug: str | None) -> list[Path]:
-    if slug:
-        path = NOTEBOOKS_DIR / f"{slug}.ipynb"
-        if not path.exists():
-            raise FileNotFoundError(f"Notebook not found: {path}")
-        return [path]
-
-    return sorted(NOTEBOOKS_DIR.glob("*.ipynb"))
-
-
 def notebook_to_mdx(notebook: dict) -> str:
     body_parts: list[str] = []
     frontmatter: str | None = None
@@ -72,7 +56,7 @@ def notebook_to_mdx(notebook: dict) -> str:
                 continue
 
             if not frontmatter_consumed:
-                extracted, remainder = split_frontmatter(text)
+                extracted, remainder = try_split_frontmatter(text)
                 if extracted:
                     frontmatter = extracted
                     frontmatter_consumed = True
@@ -118,7 +102,9 @@ def main() -> int:
     MARKDOWNS_DIR.mkdir(parents=True, exist_ok=True)
 
     try:
-        notebooks = discover_notebooks(args.slug)
+        notebooks = discover_slug_paths(
+            NOTEBOOKS_DIR, extension=".ipynb", slug=args.slug, label="notebook"
+        )
     except FileNotFoundError as error:
         print(error, file=sys.stderr)
         return 1

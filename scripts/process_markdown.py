@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Inject or refresh Mintlify author blocks in markdown files.
+"""Inject or refresh Mintlify author / Colab blocks in markdown files.
 
 Use this for markdown-only recipes (no matching notebook). Notebook recipes
-get author blocks automatically from ``convert_to_markdown.py``.
+get these blocks automatically from ``convert_to_markdown.py``.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from cookbook_utils import process_markdown_content
+from cookbook_utils import discover_slug_paths, process_markdown_content
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKDOWNS_DIR = ROOT / "markdowns"
@@ -33,16 +33,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def discover_markdown_files(slug: str | None) -> list[Path]:
-    if slug:
-        path = MARKDOWNS_DIR / f"{slug}.mdx"
-        if not path.exists():
-            raise FileNotFoundError(f"Markdown file not found: {path}")
-        return [path]
-
-    return sorted(MARKDOWNS_DIR.glob("*.mdx"))
-
-
 def process_file(path: Path) -> bool:
     original = path.read_text(encoding="utf-8")
     updated = process_markdown_content(original)
@@ -60,7 +50,9 @@ def main() -> int:
         return 1
 
     try:
-        paths = discover_markdown_files(args.slug)
+        paths = discover_slug_paths(
+            MARKDOWNS_DIR, extension=".mdx", slug=args.slug, label="markdown file"
+        )
     except FileNotFoundError as error:
         print(error, file=sys.stderr)
         return 1
@@ -72,7 +64,7 @@ def main() -> int:
             print(f"Updated {path.relative_to(ROOT)}")
 
     if changed == 0:
-        print("No markdown files needed author processing.")
+        print("No markdown files needed processing.")
     else:
         print(f"Processed {changed} markdown file(s).")
 

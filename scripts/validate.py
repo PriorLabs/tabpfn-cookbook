@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--base",
-        help="Git ref to compare against (default: auto-detect in CI, else HEAD).",
+        help="Git ref to compare against (default: merge-base with origin/main).",
     )
     parser.add_argument(
         "--all",
@@ -48,45 +48,29 @@ def run_git(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def resolve_base_ref(explicit_base: str | None) -> str | None:
+def resolve_base_ref(explicit_base: str | None) -> str:
     if explicit_base:
         return explicit_base
-
-    for env_var in ("GITHUB_BASE_REF", "GITHUB_EVENT_BEFORE"):
-        value = __import__("os").environ.get(env_var)
-        if value and value != "0000000000000000000000000000000000000000":
-            if env_var == "GITHUB_BASE_REF":
-                fetch = run_git("fetch", "origin", value, "--depth=1")
-                if fetch.returncode == 0:
-                    return f"origin/{value}"
-            return value
-
-    head = run_git("rev-parse", "HEAD")
-    if head.returncode != 0:
-        return None
 
     merge_base = run_git("merge-base", "HEAD", "origin/main")
     if merge_base.returncode == 0 and merge_base.stdout.strip():
         return merge_base.stdout.strip()
 
-    parent = run_git("rev-parse", "HEAD~1")
-    if parent.returncode == 0:
-        return parent.stdout.strip()
+    raise RuntimeError(
+        "Could not resolve a base ref. Pass --base <ref>, or fetch origin/main "
+        "so merge-base can be computed."
+    )
 
-    return None
 
-
-def changed_files(base_ref: str | None) -> set[str]:
-    if base_ref is None:
-        notebooks = {f"notebooks/{path.name}" for path in NOTEBOOKS_DIR.glob("*.ipynb")}
-        markdowns = {f"markdowns/{path.name}" for path in MARKDOWNS_DIR.glob("*.mdx")}
-        return notebooks | markdowns
-
+def changed_files(base_ref: str) -> set[str]:
     diff = run_git("diff", "--name-only", f"{base_ref}...HEAD")
     if diff.returncode != 0:
         diff = run_git("diff", "--name-only", base_ref, "HEAD")
     if diff.returncode != 0:
-        return set()
+        raise RuntimeError(
+            f"git diff against {base_ref!r} failed:\n"
+            f"{diff.stderr.strip() or diff.stdout.strip()}"
+        )
 
     return {line.strip() for line in diff.stdout.splitlines() if line.strip()}
 
@@ -173,8 +157,16 @@ def validate_markdown_files(paths: list[Path]) -> bool:
 
 def main() -> int:
     args = parse_args()
-    base_ref = None if args.all else resolve_base_ref(args.base)
-    changed = changed_files(base_ref)
+    if args.all:
+        base_ref = None
+        changed: set[str] = set()
+    else:
+        try:
+            base_ref = resolve_base_ref(args.base)
+            changed = changed_files(base_ref)
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return 1
 
     notebook_changes = [
         name for name in changed if name.startswith("notebooks/") and name.endswith(".ipynb")

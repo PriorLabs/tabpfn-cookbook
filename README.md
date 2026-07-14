@@ -31,7 +31,7 @@ authors:
 Supported social fields: `github`, `linkedin`, `x` (`twitter` is also accepted for X).
 
 - **Notebook recipes** — author blocks are added when you run `convert_to_markdown.py` (included automatically).
-- **Markdown-only recipes** — after adding or editing `authors` in frontmatter, run `process_markdown.py`.
+- **Markdown-only recipes** — after adding or editing `authors` / `colab_url` in frontmatter, run `process_markdown.py`.
 
 Validation fails if `authors` is in frontmatter but the rendered author block is missing or out of date.
 
@@ -92,8 +92,8 @@ A maintainer will review your PR. CI runs the same checks as `validate.py` — i
 **Option B — Markdown only (for prose-heavy or hand-authored recipes)**
 
 1. Add `markdowns/my-recipe.mdx` with [frontmatter](#frontmatter) at the top.
-2. If you set `authors`, run `python3 scripts/process_markdown.py --slug my-recipe`.
-3. No notebook or conversion step otherwise — CI validates frontmatter and author blocks.
+2. If you set `authors` and/or `colab_url`, run `python3 scripts/process_markdown.py --slug my-recipe` so the injected Mintlify blocks stay in sync.
+3. No notebook or `convert_to_markdown.py` step — CI still validates frontmatter and injected blocks.
 
 ### What we look for
 
@@ -151,11 +151,13 @@ git add notebooks/ markdowns/
 
 ### Add markdown only (no notebook)
 
-Create `markdowns/my-recipe.mdx` directly with valid frontmatter. If you set `authors`, run:
+Create `markdowns/my-recipe.mdx` directly with valid frontmatter. If you set `authors` and/or `colab_url`, run:
 
 ```bash
 python3 scripts/process_markdown.py --slug my-recipe   # or --all
 ```
+
+Do **not** run `convert_to_markdown.py` for these recipes — that path is only for notebooks.
 
 ### Validate locally
 
@@ -213,4 +215,4 @@ Validation rules:
 
 - **Notebook changed** → fails if `markdowns/` is not up to date (run `convert_to_markdown.py`, which includes author blocks)
 - **Authors in frontmatter** → fails if the rendered author block is missing or out of date
-- **Markdown only changed** → validates frontmatter and author blocks (run `process_markdown.py` when `authors` is set)
+- **Markdown only changed** → validates frontmatter and injected author/Colab blocks (run `process_markdown.py` when `authors` or `colab_url` is set)

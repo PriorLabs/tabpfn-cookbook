@@ -10,7 +10,6 @@ the result to a docs preview (or staging) branch.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import subprocess
@@ -18,7 +17,6 @@ import sys
 from pathlib import Path
 
 DOCS_REPO = "PriorLabs/docs"
-SOURCE_FILE = ".cookbooks-source.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,11 +83,6 @@ def copy_markdowns(markdowns_dir: Path, cookbook_dir: Path) -> list[Path]:
     return copied
 
 
-def write_source_file(docs_dir: Path, *, repo: str, ref: str) -> None:
-    source = {"repo": repo, "ref": ref}
-    (docs_dir / SOURCE_FILE).write_text(f"{json.dumps(source, indent=2)}\n", encoding="utf-8")
-
-
 def run_docs_sync(docs_dir: Path) -> None:
     # Cookbook markdown is already in cookbook/; only regenerate nav / stubs.
     run(["npm", "ci"], cwd=docs_dir)
@@ -104,7 +97,6 @@ def commit_message(*, pr_number: int | None, repo: str, ref: str) -> str:
 
 def stage_preview_files(docs_dir: Path) -> None:
     paths = [
-        SOURCE_FILE,
         "cookbook",
         "docs.json",
         "capabilities",
@@ -128,7 +120,6 @@ def main() -> int:
     run(["git", "fetch", "origin", args.base_branch, "--depth", "1"], cwd=docs_dir)
     run(["git", "checkout", "-B", args.preview_branch, f"origin/{args.base_branch}"], cwd=docs_dir)
 
-    write_source_file(docs_dir, repo=args.cookbooks_repo, ref=args.cookbooks_ref)
     copied = copy_markdowns(markdowns_dir, docs_dir / "cookbook")
     print(f"Copied {len(copied)} cookbook file(s) into {docs_dir / 'cookbook'}")
 

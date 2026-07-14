@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import html
-import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -21,19 +21,72 @@ ALLOWED_FRONTMATTER_KEYS = frozenset(
     }
 )
 AUTHOR_SOCIAL_KEYS = frozenset({"github", "linkedin", "twitter", "x"})
-AUTHOR_BLOCK_START = "{/* cookbook-authors:start process_markdown.py */}"
-AUTHOR_BLOCK_END = "{/* cookbook-authors:end process_markdown.py */}"
-COLAB_BLOCK_START = "{/* cookbook-colab:start process_markdown.py */}"
-COLAB_BLOCK_END = "{/* cookbook-colab:end process_markdown.py */}"
 COOKBOOKS_REPO = "PriorLabs/prior-cookbook"
 COOKBOOKS_RAW_BRANCH = "main"
 COOKBOOKS_RAW_BASE_URL = (
     f"https://raw.githubusercontent.com/{COOKBOOKS_REPO}/{COOKBOOKS_RAW_BRANCH}"
 )
 
+FRONTMATTER_BLOCK_RE = re.compile(r"^---\r?\n([\s\S]*?)\r?\n---", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class MdxBlockMarkers:
+    start: str
+    end: str
+
+
+AUTHOR_BLOCK = MdxBlockMarkers(
+    "{/* cookbook-authors:start process_markdown.py */}",
+    "{/* cookbook-authors:end process_markdown.py */}",
+)
+COLAB_BLOCK = MdxBlockMarkers(
+    "{/* cookbook-colab:start process_markdown.py */}",
+    "{/* cookbook-colab:end process_markdown.py */}",
+)
+
+# Back-compat aliases used in older docs / comments
+AUTHOR_BLOCK_START = AUTHOR_BLOCK.start
+AUTHOR_BLOCK_END = AUTHOR_BLOCK.end
+COLAB_BLOCK_START = COLAB_BLOCK.start
+COLAB_BLOCK_END = COLAB_BLOCK.end
+
+
+def discover_slug_paths(
+    directory: Path,
+    *,
+    extension: str,
+    slug: str | None = None,
+    label: str = "file",
+    only_slugs: list[str] | frozenset[str] | None = None,
+) -> list[Path]:
+    """Return paths under ``directory`` for ``--slug`` / ``--all`` CLIs."""
+    ext = extension if extension.startswith(".") else f".{extension}"
+
+    if slug:
+        path = directory / f"{slug}{ext}"
+        if not path.exists():
+            raise FileNotFoundError(f"{label.capitalize()} not found: {path}")
+        return [path]
+
+    if only_slugs is not None:
+        return [directory / f"{name}{ext}" for name in sorted(only_slugs)]
+
+    return sorted(directory.glob(f"*{ext}"))
+
+
+def try_split_frontmatter(text: str) -> tuple[str | None, str]:
+    """Soft split: return ``(None, text)`` if no frontmatter block is present."""
+    stripped = text.strip()
+    match = FRONTMATTER_BLOCK_RE.match(stripped)
+    if not match:
+        return None, text
+    remainder = stripped[match.end() :].lstrip("\n")
+    return match.group(0).strip(), remainder
+
 
 def extract_frontmatter_yaml(text: str) -> str:
-    match = re.match(r"^---\r?\n([\s\S]*?)\r?\n---", text.strip())
+    match = FRONTMATTER_BLOCK_RE.match(text.strip())
     if not match:
         raise ValueError("missing YAML frontmatter block (expected --- at top)")
     return match.group(1)
@@ -85,26 +138,79 @@ def split_mdx_document(text: str) -> tuple[str, str, str]:
     return frontmatter_block, body, text
 
 
-def strip_author_block(body: str) -> str:
+def dump_frontmatter_block(frontmatter: dict[str, object]) -> str:
+    dumped = yaml.safe_dump(
+        frontmatter,
+        sort_keys=False,
+        allow_unicode=True,
+        default_flow_style=False,
+    )
+    return f"---\n{dumped.rstrip()}\n---"
+
+
+def normalize_mdx_block(block: str) -> str:
+    return "\n".join(line.rstrip() for line in block.strip().splitlines())
+
+
+def strip_mdx_block(body: str, markers: MdxBlockMarkers) -> str:
     pattern = re.compile(
-        rf"\s*{re.escape(AUTHOR_BLOCK_START)}[\s\S]*?{re.escape(AUTHOR_BLOCK_END)}\s*\n?",
+        rf"\s*{re.escape(markers.start)}[\s\S]*?{re.escape(markers.end)}\s*\n?",
         re.MULTILINE,
     )
     return pattern.sub("", body, count=1).lstrip("\n")
 
 
-def extract_author_block(body: str) -> str | None:
+def extract_mdx_block(body: str, markers: MdxBlockMarkers) -> str | None:
     match = re.search(
-        rf"{re.escape(AUTHOR_BLOCK_START)}([\s\S]*?){re.escape(AUTHOR_BLOCK_END)}",
+        rf"{re.escape(markers.start)}([\s\S]*?){re.escape(markers.end)}",
         body,
     )
     if not match:
         return None
-    return f"{AUTHOR_BLOCK_START}{match.group(1)}{AUTHOR_BLOCK_END}"
+    return f"{markers.start}{match.group(1)}{markers.end}"
 
 
-def normalize_author_block(block: str) -> str:
-    return "\n".join(line.rstrip() for line in block.strip().splitlines())
+def wrap_mdx_block(markers: MdxBlockMarkers, *inner_lines: str) -> str:
+    return "\n".join([markers.start, *inner_lines, markers.end])
+
+
+def inject_mdx_block(body: str, markers: MdxBlockMarkers, block: str | None) -> str:
+    body = strip_mdx_block(body, markers)
+    if not block:
+        return body
+    if body:
+        return f"{block}\n{body}"
+    return f"{block}\n"
+
+
+def remediation_command(*, slug: str, has_notebook: bool) -> str:
+    if has_notebook:
+        return f"python3 scripts/convert_to_markdown.py --slug {slug}"
+    return f"python3 scripts/process_markdown.py --slug {slug}"
+
+
+def injected_block_errors(
+    *,
+    source: str,
+    existing: str | None,
+    expected: str | None,
+    remediation: str,
+    missing_message: str,
+    stale_message: str,
+    orphan_message: str,
+) -> list[str]:
+    if expected is None:
+        if existing:
+            return [f"{source}: {orphan_message}"]
+        return []
+
+    if not existing:
+        return [f"{source}: {missing_message} Run: {remediation}"]
+
+    if normalize_mdx_block(existing) != normalize_mdx_block(expected):
+        return [f"{source}: {stale_message} Run: {remediation}"]
+
+    return []
 
 
 SOCIAL_ICON_SVGS = {
@@ -158,27 +264,15 @@ def render_authors_block(authors: list[dict[str, str]]) -> str:
             entries.append('<span className="cookbook-author-separator" aria-hidden="true">·</span>')
         entries.append(render_author_entry(author))
 
-    lines = [
-        AUTHOR_BLOCK_START,
+    return wrap_mdx_block(
+        AUTHOR_BLOCK,
         '<div className="cookbook-authors">',
         '  <div className="cookbook-author-bar">',
         '    <span className="cookbook-author-by">By</span>',
         f'    <span className="cookbook-author-list">{"".join(entries)}</span>',
         "  </div>",
         "</div>",
-        AUTHOR_BLOCK_END,
-    ]
-    return "\n".join(lines)
-
-
-def dump_frontmatter_block(frontmatter: dict[str, object]) -> str:
-    dumped = yaml.safe_dump(
-        frontmatter,
-        sort_keys=False,
-        allow_unicode=True,
-        default_flow_style=False,
     )
-    return f"---\n{dumped.rstrip()}\n---"
 
 
 def colab_url_for_notebook(slug: str) -> str:
@@ -198,63 +292,35 @@ def ensure_colab_url(content: str, slug: str) -> str:
     return f"{dump_frontmatter_block(frontmatter)}\n"
 
 
-def strip_colab_block(body: str) -> str:
-    pattern = re.compile(
-        rf"\s*{re.escape(COLAB_BLOCK_START)}[\s\S]*?{re.escape(COLAB_BLOCK_END)}\s*\n?",
-        re.MULTILINE,
-    )
-    return pattern.sub("", body, count=1).lstrip("\n")
-
-
-def extract_colab_block(body: str) -> str | None:
-    match = re.search(
-        rf"{re.escape(COLAB_BLOCK_START)}([\s\S]*?){re.escape(COLAB_BLOCK_END)}",
-        body,
-    )
-    if not match:
-        return None
-    return f"{COLAB_BLOCK_START}{match.group(1)}{COLAB_BLOCK_END}"
-
-
 def render_colab_block(colab_url: str) -> str:
     safe_url = html.escape(colab_url, quote=True)
-    lines = [
-        COLAB_BLOCK_START,
+    # Official Colab monogram (Simple Icons / brand mark), single fill #F9AB00.
+    colab_icon = (
+        '<svg className="cookbook-colab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">'
+        '<path fill="#F9AB00" d="M16.9414 4.9757a7.033 7.033 0 0 0-4.9308 2.0646 7.033 7.033 0 0 0-.1232 9.8068l2.395-2.395a3.6455 3.6455 0 0 1 5.1497-5.1478l2.397-2.3989a7.033 7.033 0 0 0-4.8877-1.9297zM7.07 4.9855a7.033 7.033 0 0 0-4.8878 1.9316l2.3911 2.3911a3.6434 3.6434 0 0 1 5.0227.1271l1.7341-2.9737-.0997-.0802A7.033 7.033 0 0 0 7.07 4.9855zm15.0093 2.1721l-2.3892 2.3911a3.6455 3.6455 0 0 1-5.1497 5.1497l-2.4067 2.4068a7.0362 7.0362 0 0 0 9.9456-9.9476zM1.932 7.1674a7.033 7.033 0 0 0-.002 9.6816l2.397-2.397a3.6434 3.6434 0 0 1-.004-4.8916zm7.664 7.4235c-1.38 1.3816-3.5863 1.411-5.0168.1134l-2.397 2.395c2.4693 2.3328 6.263 2.5753 9.0072.5455l.1368-.1115z"/>'
+        "</svg>"
+    )
+    return wrap_mdx_block(
+        COLAB_BLOCK,
         '<div className="cookbook-colab">',
         f'  <a href="{safe_url}" className="cookbook-colab-button" '
         'target="_blank" rel="noopener noreferrer">',
-        '    <img',
-        '      className="cookbook-colab-badge"',
-        '      src="https://colab.research.google.com/assets/colab-badge.svg"',
-        '      alt="Open In Colab"',
-        "    />",
+        f"    {colab_icon}",
+        '    <span className="cookbook-colab-label">Open in Colab</span>',
         "  </a>",
         "</div>",
-        COLAB_BLOCK_END,
-    ]
-    return "\n".join(lines)
-
-
-def inject_colab_block(body: str, colab_url: str | None) -> str:
-    body = strip_colab_block(body)
-    if not colab_url or not str(colab_url).strip():
-        return body
-
-    block = render_colab_block(str(colab_url).strip())
-    if body:
-        return f"{block}\n{body}"
-    return f"{block}\n"
+    )
 
 
 def inject_author_block(body: str, authors: list[dict[str, str]] | None) -> str:
-    body = strip_author_block(body)
-    if not authors:
-        return body
+    block = render_authors_block(authors) if authors else None
+    return inject_mdx_block(body, AUTHOR_BLOCK, block)
 
-    block = render_authors_block(authors)
-    if body:
-        return f"{block}\n{body}"
-    return f"{block}\n"
+
+def inject_colab_block(body: str, colab_url: str | None) -> str:
+    if not colab_url or not str(colab_url).strip():
+        return inject_mdx_block(body, COLAB_BLOCK, None)
+    return inject_mdx_block(body, COLAB_BLOCK, render_colab_block(str(colab_url).strip()))
 
 
 def process_markdown_content(content: str) -> str:
@@ -273,12 +339,6 @@ def process_markdown_content(content: str) -> str:
     return f"{frontmatter_block}\n"
 
 
-def author_remediation_command(*, slug: str, has_notebook: bool) -> str:
-    if has_notebook:
-        return f"python3 scripts/convert_to_markdown.py --slug {slug}"
-    return f"python3 scripts/process_markdown.py --slug {slug}"
-
-
 def author_block_is_current(
     content: str,
     *,
@@ -288,29 +348,19 @@ def author_block_is_current(
     frontmatter = parse_frontmatter_text(content)
     _, body, _ = split_mdx_document(content)
     authors = frontmatter.get("authors")
-    existing = extract_author_block(body)
+    existing = extract_mdx_block(body, AUTHOR_BLOCK)
+    expected = render_authors_block(authors) if isinstance(authors, list) and authors else None
+    remediation = remediation_command(slug=Path(source).stem, has_notebook=has_notebook)
 
-    if not authors:
-        if existing:
-            return [f"{source}: remove stale author block or add authors to frontmatter"]
-        return []
-
-    slug = Path(source).stem
-    remediation = author_remediation_command(slug=slug, has_notebook=has_notebook)
-    expected = render_authors_block(authors)  # type: ignore[arg-type]
-    if not existing:
-        return [
-            f"{source}: authors found in frontmatter but author block is missing. "
-            f"Run: {remediation}"
-        ]
-
-    if normalize_author_block(existing) != normalize_author_block(expected):
-        return [
-            f"{source}: author block is out of date. "
-            f"Run: {remediation}"
-        ]
-
-    return []
+    return injected_block_errors(
+        source=source,
+        existing=existing,
+        expected=expected,
+        remediation=remediation,
+        missing_message="authors found in frontmatter but author block is missing.",
+        stale_message="author block is out of date.",
+        orphan_message="remove stale author block or add authors to frontmatter",
+    )
 
 
 def colab_block_is_current(
@@ -322,9 +372,9 @@ def colab_block_is_current(
     frontmatter = parse_frontmatter_text(content)
     _, body, _ = split_mdx_document(content)
     colab_url = frontmatter.get("colab_url")
-    existing = extract_colab_block(body)
+    existing = extract_mdx_block(body, COLAB_BLOCK)
     slug = Path(source).stem
-    remediation = author_remediation_command(slug=slug, has_notebook=has_notebook)
+    remediation = remediation_command(slug=slug, has_notebook=has_notebook)
 
     if has_notebook:
         expected_url = colab_url_for_notebook(slug)
@@ -333,47 +383,39 @@ def colab_block_is_current(
                 f"{source}: notebook recipes must set colab_url to {expected_url!r}. "
                 f"Run: {remediation}"
             ]
-        expected = render_colab_block(expected_url)
-        if not existing:
-            return [
-                f"{source}: colab_url is set but Open in Colab button is missing. "
-                f"Run: {remediation}"
-            ]
-        if normalize_author_block(existing) != normalize_author_block(expected):
-            return [
-                f"{source}: Open in Colab button is out of date. "
-                f"Run: {remediation}"
-            ]
-        return []
+        return injected_block_errors(
+            source=source,
+            existing=existing,
+            expected=render_colab_block(expected_url),
+            remediation=remediation,
+            missing_message="colab_url is set but Open in Colab button is missing.",
+            stale_message="Open in Colab button is out of date.",
+            orphan_message="remove stale Open in Colab button or add colab_url to frontmatter",
+        )
 
     if not colab_url:
-        if existing:
-            return [f"{source}: remove stale Open in Colab button or add colab_url to frontmatter"]
-        return []
+        return injected_block_errors(
+            source=source,
+            existing=existing,
+            expected=None,
+            remediation=remediation,
+            missing_message="",
+            stale_message="",
+            orphan_message="remove stale Open in Colab button or add colab_url to frontmatter",
+        )
 
     if not isinstance(colab_url, str) or not colab_url.strip():
         return [f"{source}: colab_url must be a non-empty string when set"]
 
-    expected = render_colab_block(colab_url.strip())
-    if not existing:
-        return [
-            f"{source}: colab_url is set but Open in Colab button is missing. "
-            f"Run: {remediation}"
-        ]
-    if normalize_author_block(existing) != normalize_author_block(expected):
-        return [
-            f"{source}: Open in Colab button is out of date. "
-            f"Run: {remediation}"
-        ]
-    return []
-
-
-def strip_author_block_from_document(content: str) -> str:
-    frontmatter_block, body, _ = split_mdx_document(content)
-    body = strip_author_block(body)
-    if body:
-        return f"{frontmatter_block}\n{body}"
-    return f"{frontmatter_block}\n"
+    return injected_block_errors(
+        source=source,
+        existing=existing,
+        expected=render_colab_block(colab_url.strip()),
+        remediation=remediation,
+        missing_message="colab_url is set but Open in Colab button is missing.",
+        stale_message="Open in Colab button is out of date.",
+        orphan_message="remove stale Open in Colab button or add colab_url to frontmatter",
+    )
 
 
 def parse_mdx_frontmatter(path: Path) -> dict[str, object]:
@@ -385,19 +427,6 @@ def cell_source(cell: dict) -> str:
     if isinstance(source, list):
         return "".join(source)
     return source
-
-
-def parse_notebook_frontmatter(path: Path) -> dict[str, object]:
-    notebook = json.loads(path.read_text(encoding="utf-8"))
-    first_markdown = next(
-        (cell for cell in notebook.get("cells", []) if cell.get("cell_type") == "markdown"),
-        None,
-    )
-    if not first_markdown:
-        raise ValueError("notebook has no markdown cells")
-
-    text = cell_source(first_markdown).strip()
-    return parse_frontmatter_text(text)
 
 
 def validate_frontmatter(frontmatter: dict[str, object], *, source: str) -> list[str]:
