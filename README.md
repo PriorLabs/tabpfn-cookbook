@@ -12,7 +12,7 @@ Every recipe needs **YAML frontmatter** so it can be published on the docs site.
 - **Markdown-only recipes** — top of `markdowns/*.mdx`
 
 **Required:** `title`, `description`  
-**Optional:** `icon`, `cookbookTags`, `feature_in_doc`, `authors`
+**Optional:** `icon`, `cookbookTags`, `feature_in_doc`, `authors`, `colab_url`
 
 See [Frontmatter](#frontmatter) for the full template and field descriptions.
 
@@ -31,9 +31,21 @@ authors:
 Supported social fields: `github`, `linkedin`, `x` (`twitter` is also accepted for X).
 
 - **Notebook recipes** — author blocks are added when you run `convert_to_markdown.py` (included automatically).
-- **Markdown-only recipes** — after adding or editing `authors` in frontmatter, run `process_markdown.py`.
+- **Markdown-only recipes** — after adding or editing `authors` / `colab_url` in frontmatter, run `process_markdown.py`.
 
 Validation fails if `authors` is in frontmatter but the rendered author block is missing or out of date.
+
+### Open in Colab
+
+Notebook recipes get a `colab_url` automatically when you run `convert_to_markdown.py`. It points at the notebook on `main`:
+
+```text
+https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/<slug>.ipynb
+```
+
+That value is written to frontmatter and turned into an **Open in Colab** badge at the top-right of the docs recipe page. Do not set `colab_url` by hand for notebook recipes — conversion owns it.
+
+Markdown-only recipes can optionally set `colab_url` themselves; run `process_markdown.py` so the button is injected.
 
 ### Embedded videos
 
@@ -80,8 +92,8 @@ A maintainer will review your PR. CI runs the same checks as `validate.py` — i
 **Option B — Markdown only (for prose-heavy or hand-authored recipes)**
 
 1. Add `markdowns/my-recipe.mdx` with [frontmatter](#frontmatter) at the top.
-2. If you set `authors`, run `python3 scripts/process_markdown.py --slug my-recipe`.
-3. No notebook or conversion step otherwise — CI validates frontmatter and author blocks.
+2. If you set `authors` and/or `colab_url`, run `python3 scripts/process_markdown.py --slug my-recipe` so the injected Mintlify blocks stay in sync.
+3. No notebook or `convert_to_markdown.py` step — CI still validates frontmatter and injected blocks.
 
 ### What we look for
 
@@ -119,11 +131,13 @@ authors:
   - name: Alex Rivera
     github: https://github.com/priorlabs
     linkedin: https://www.linkedin.com/company/prior-labs
+colab_url: "https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/my-recipe.ipynb"
 ---
 ```
 
 Required: `title`, `description`  
-Optional: `icon`, `cookbookTags`, `feature_in_doc`, `authors`
+Optional: `icon`, `cookbookTags`, `feature_in_doc`, `authors`  
+Auto-set for notebooks by `convert_to_markdown.py`: `colab_url`
 
 ## Workflow
 
@@ -137,11 +151,13 @@ git add notebooks/ markdowns/
 
 ### Add markdown only (no notebook)
 
-Create `markdowns/my-recipe.mdx` directly with valid frontmatter. If you set `authors`, run:
+Create `markdowns/my-recipe.mdx` directly with valid frontmatter. If you set `authors` and/or `colab_url`, run:
 
 ```bash
 python3 scripts/process_markdown.py --slug my-recipe   # or --all
 ```
+
+Do **not** run `convert_to_markdown.py` for these recipes — that path is only for notebooks.
 
 ### Validate locally
 
@@ -163,22 +179,27 @@ Pull requests and pushes to `main` run `.github/workflows/docs-sync.yml`:
 Runs on every cookbook PR update and every push to `main`. Checks notebooks, markdown, and author blocks.
 
 ### Job 2 — `publish-docs-preview` (PRs only)
-After validation passes:
+After validation passes, **on every PR commit** (`synchronize`):
 
-1. Clones your **staging docs branch** (`DOCS_PREVIEW_BRANCH` — the branch that already has the fetch-at-build setup).
-2. Creates/updates a **per-PR branch** on `docs`, e.g. `cookbook/pr-42`.
-3. Commits only `.cookbooks-source.json` pointing at the PR’s cookbook repo + branch (works for forks).
-4. Triggers a **Mintlify preview** for that `cookbook/pr-*` branch.
+1. Clones your staging docs branch (`DOCS_PREVIEW_BRANCH`).
+2. Creates/updates `cookbook/pr-<N>` on `docs`.
+3. **Copies this PR’s `markdowns/*.mdx` into `docs/cookbook/`**, runs `npm run sync`, and commits the result.
+4. Triggers a Mintlify preview for `cookbook/pr-<N>`.
+5. On **PR opened** only, posts a comment with the Mintlify `previewUrl` (same-repo or fork → origin). Later pushes update the same preview branch without re-commenting.
 
-When Mintlify builds that branch, `fetch-cookbooks.mjs` reads `.cookbooks-source.json` and pulls `markdowns/` from the **PR branch** (not `main`).
+Mintlify only serves files on the docs branch — it cannot fetch private cookbook repos — so CI materializes the markdown into the preview branch. Fork PRs work because Actions checks out the PR head.
 
 ### Job 3 — `refresh-docs-preview` (merge to `main` only)
-After cookbooks land on `prior-cookbook` `main`, redeploys your **staging** docs branch (`DOCS_PREVIEW_BRANCH`). That branch has no `.cookbooks-source.json`, so the build pulls cookbooks from `prior-cookbook` `main`.
+After cookbooks land on `main`:
+
+1. Copies **`main`’s** `markdowns/` onto `DOCS_PREVIEW_BRANCH`.
+2. Runs sync and pushes.
+3. Triggers a Mintlify preview for that staging docs branch.
 
 ### Job 4 — `cleanup-docs-preview` (PR closed)
 Deletes the temporary `cookbook/pr-*` branch on `docs`.
 
-**Job 2 vs job 3:** Job 2 is *per open PR* → temporary preview with that PR’s cookbooks. Job 3 is *after merge* → refresh your long-lived staging preview with the latest cookbooks on `main`.
+**Job 2 vs job 3:** Job 2 = temporary preview of *this PR’s* cookbooks. Job 3 = refresh long-lived staging with cookbooks from *main*.
 
 ### Repository secrets and variables
 
@@ -186,15 +207,13 @@ Configure in **Settings → Secrets and variables → Actions** on `prior-cookbo
 
 | Name | Type | Purpose |
 |------|------|---------|
-| `DOCS_REPO_TOKEN` | **Secret** | Push preview branches to `PriorLabs/docs` |
+| `DOCS_REPO_TOKEN` | **Secret** | Push preview/staging branches to `PriorLabs/docs` |
 | `MINTLIFY_API_KEY` | **Secret** | Mintlify admin API key (`mint_…`) |
 | `MINTLIFY_PROJECT_ID` | **Secret** | Mintlify project ID |
-| `DOCS_PREVIEW_BRANCH` | **Variable** | Your staging docs branch (base for previews + target for post-merge redeploy) |
-
-On `PriorLabs/docs`, set `COOKBOOKS_GITHUB_TOKEN` if cookbook sources are private.
+| `DOCS_PREVIEW_BRANCH` | **Variable** | Staging docs branch (base for PR previews + target after merge) |
 
 Validation rules:
 
 - **Notebook changed** → fails if `markdowns/` is not up to date (run `convert_to_markdown.py`, which includes author blocks)
 - **Authors in frontmatter** → fails if the rendered author block is missing or out of date
-- **Markdown only changed** → validates frontmatter and author blocks (run `process_markdown.py` when `authors` is set)
+- **Markdown only changed** → validates frontmatter and injected author/Colab blocks (run `process_markdown.py` when `authors` or `colab_url` is set)

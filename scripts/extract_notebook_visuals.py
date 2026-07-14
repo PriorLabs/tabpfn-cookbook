@@ -11,6 +11,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from cookbook_utils import discover_slug_paths
+
 ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOKS_DIR = ROOT / "notebooks"
 VISUALS_DIR = ROOT / "visuals"
@@ -56,17 +58,6 @@ def parse_args() -> argparse.Namespace:
         help="Process a single notebook by slug (filename without .ipynb).",
     )
     return parser.parse_args()
-
-
-def discover_notebooks(slug: str | None) -> list[Path]:
-    if slug:
-        path = NOTEBOOKS_DIR / f"{slug}.ipynb"
-        if not path.exists():
-            raise FileNotFoundError(f"Notebook not found: {path}")
-        return [path]
-
-    slugs = sorted(NOTEBOOK_IMAGE_NAMES)
-    return [NOTEBOOKS_DIR / f"{name}.ipynb" for name in slugs]
 
 
 def extract_image_bytes(outputs: list[dict]) -> tuple[bytes, str] | None:
@@ -178,7 +169,13 @@ def main() -> int:
         return 1
 
     try:
-        notebooks = discover_notebooks(args.slug)
+        notebooks = discover_slug_paths(
+            NOTEBOOKS_DIR,
+            extension=".ipynb",
+            slug=args.slug,
+            label="notebook",
+            only_slugs=None if args.slug else list(NOTEBOOK_IMAGE_NAMES),
+        )
     except FileNotFoundError as error:
         print(error, file=sys.stderr)
         return 1

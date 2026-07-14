@@ -1,0 +1,118 @@
+---
+title: Faster Inference with KV Cache
+description: Get a quick introduction into faster inference with fit_with_cache
+cookbookTags:
+- performance
+colab_url: https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/faster_preformance_with_cache.ipynb
+---
+{/* cookbook-colab:start process_markdown.py */}
+<div className="cookbook-colab">
+  <a href="https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/faster_preformance_with_cache.ipynb" className="cookbook-colab-button" target="_blank" rel="noopener noreferrer">
+    <svg className="cookbook-colab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="#F9AB00" d="M16.9414 4.9757a7.033 7.033 0 0 0-4.9308 2.0646 7.033 7.033 0 0 0-.1232 9.8068l2.395-2.395a3.6455 3.6455 0 0 1 5.1497-5.1478l2.397-2.3989a7.033 7.033 0 0 0-4.8877-1.9297zM7.07 4.9855a7.033 7.033 0 0 0-4.8878 1.9316l2.3911 2.3911a3.6434 3.6434 0 0 1 5.0227.1271l1.7341-2.9737-.0997-.0802A7.033 7.033 0 0 0 7.07 4.9855zm15.0093 2.1721l-2.3892 2.3911a3.6455 3.6455 0 0 1-5.1497 5.1497l-2.4067 2.4068a7.0362 7.0362 0 0 0 9.9456-9.9476zM1.932 7.1674a7.033 7.033 0 0 0-.002 9.6816l2.397-2.397a3.6434 3.6434 0 0 1-.004-4.8916zm7.664 7.4235c-1.38 1.3816-3.5863 1.411-5.0168.1134l-2.397 2.395c2.4693 2.3328 6.263 2.5753 9.0072.5455l.1368-.1115z"/></svg>
+    <span className="cookbook-colab-label">Open in Colab</span>
+  </a>
+</div>
+{/* cookbook-colab:end process_markdown.py */}
+*Build the model's internal representation once at fit time, reuse it at predict.*
+
+By default TabPFN recomputes its representation of the training set on every call to `predict`. The `fit_with_cache` mode does that work once, during `fit`, and caches the result, so the first prediction is noticeably faster. This short notebook benchmarks the two modes side by side on the same data.
+
+## Setup
+
+*Installing TabPFN and scikit-learn.*
+
+```python
+!pip install tabpfn scikit-learn
+```
+
+## Imports
+
+*The classifier, a dataset, and timing utilities.*
+
+```python
+import time
+import os
+
+from google.colab import userdata
+from sklearn.datasets import make_classification
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+
+from tabpfn import TabPFNClassifier
+```
+
+## Authenticating with a Token
+
+*Setting `TABPFN_TOKEN` so the weights can be downloaded.*
+
+```python
+os.environ["TABPFN_TOKEN"] = userdata.get('TABPFN_TOKEN')
+```
+
+## Data and Split
+
+*A synthetic 5,000-row classification set; a small test slice keeps prediction quick.*
+
+```python
+X, y = make_classification(n_samples=5000, n_features=20, random_state=42, n_classes=2)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.05, random_state=42, stratify=y
+)
+```
+
+## The Benchmark Function
+
+*Timing fit and predict.*
+
+`benchmark_tabpfn` fits, times the first prediction. The first prediction is where the cache pays off.
+
+```python
+def benchmark_tabpfn(clf: TabPFNClassifier, name: str, n_predict_calls = 1) -> None:
+    t0 = time.perf_counter()
+    clf.fit(X_train, y_train)
+    t_fit = time.perf_counter() - t0
+
+    t1 = time.perf_counter()
+    for _ in range(n_predict_calls):
+        preds = clf.predict(X_test)
+    t_pred = time.perf_counter() - t1
+
+    print(
+        f"[{name}] fit: {t_fit:.4f}s | predict: {t_pred:.4f}s"
+    )
+```
+
+## With and Without the Cache
+
+*Comparing default mode against `fit_with_cache`.*
+
+The baseline recomputes the training representation at predict time. With `fit_with_cache`, that work happens during `fit`, so the first prediction is faster.
+
+```python
+# Baseline: no cache
+clf_no_cache = (
+    TabPFNClassifier()
+)
+benchmark_tabpfn(clf_no_cache, "no_cache")
+
+# With KV cache: cache is built during `fit`, so first predict is faster
+clf_kv = TabPFNClassifier(fit_mode="fit_with_cache")
+benchmark_tabpfn(clf_kv, "kv_cache")
+```
+
+## The Importance of Cache with Repeated `predict` Calls
+
+```python
+N_PREDICT_CALLS = 10
+
+# Baseline: no cache
+clf_no_cache = (
+    TabPFNClassifier()
+)
+benchmark_tabpfn(clf_no_cache, "no_cache", n_predict_calls = N_PREDICT_CALLS)
+
+# With cache: the multiple predict calls are easily handled
+clf_kv = TabPFNClassifier(fit_mode="fit_with_cache")
+benchmark_tabpfn(clf_kv, "kv_cache", n_predict_calls = N_PREDICT_CALLS)
+```
