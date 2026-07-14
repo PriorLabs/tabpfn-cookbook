@@ -185,6 +185,7 @@ After validation passes, **on every PR commit** (`synchronize`):
 2. Creates/updates `cookbook/pr-<N>` on `docs`.
 3. **Copies this PR’s `markdowns/*.mdx` into `docs/cookbook/`**, runs `npm run sync`, and commits the result.
 4. Triggers a Mintlify preview for `cookbook/pr-<N>`.
+5. On **PR opened** only, posts a comment with the Mintlify `previewUrl` (same-repo or fork → origin). Later pushes update the same preview branch without re-commenting.
 
 Mintlify only serves files on the docs branch — it cannot fetch private cookbook repos — so CI materializes the markdown into the preview branch. Fork PRs work because Actions checks out the PR head.
 
