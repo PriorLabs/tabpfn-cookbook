@@ -101,6 +101,11 @@ clf_kv = TabPFNClassifier(fit_mode="fit_with_cache")
 benchmark_tabpfn(clf_kv, "kv_cache")
 ```
 
+```console
+[no_cache] fit: 0.6197s | predict: 2.3743s
+[kv_cache] fit: 2.8213s | predict: 0.4184s
+```
+
 ## The Importance of Cache with Repeated `predict` Calls
 
 ```python
@@ -115,4 +120,9 @@ benchmark_tabpfn(clf_no_cache, "no_cache", n_predict_calls = N_PREDICT_CALLS)
 # With cache: the multiple predict calls are easily handled
 clf_kv = TabPFNClassifier(fit_mode="fit_with_cache")
 benchmark_tabpfn(clf_kv, "kv_cache", n_predict_calls = N_PREDICT_CALLS)
+```
+
+```console
+[no_cache] fit: 0.6057s | predict: 23.4870s
+[kv_cache] fit: 2.8484s | predict: 4.4342s
 ```

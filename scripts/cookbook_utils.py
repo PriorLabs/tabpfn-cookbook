@@ -429,6 +429,118 @@ def cell_source(cell: dict) -> str:
     return source
 
 
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+# stdout lines dropped as progress/log noise rather than real results.
+OUTPUT_NOISE_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"\d{1,2}:\d{2}\b"  # MM:SS progress timestamps (e.g. tabpfn-client spinner)
+    r"|Found existing access token"  # tabpfn-client auth notice
+    r"|(?:WARNING|INFO|DEBUG|ERROR|CRITICAL):"  # logging-module lines on stdout
+    r")"
+)
+
+# execute_result / display_data text/plain reprs that are objects, not data.
+OUTPUT_REPR_NOISE_RE = re.compile(
+    r"^<.*\b(?:matplotlib|Axes|Figure|module|object at 0x)\b.*>$"
+)
+
+# Cell tags that suppress output rendering (Jupyter Book convention).
+OUTPUT_SKIP_TAGS = frozenset({"hide-output", "remove-output", "no-output"})
+
+_OUTPUT_PLAIN_MIME = "text/plain"
+
+
+def cell_tags(cell: dict) -> set[str]:
+    tags = cell.get("metadata", {}).get("tags", [])
+    if isinstance(tags, list):
+        return {str(tag).strip() for tag in tags}
+    return set()
+
+
+def is_command_cell(source: str) -> bool:
+    """True when every code line is a shell (`!`) or magic (`%`) command."""
+    code_lines = [
+        line.strip()
+        for line in source.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if not code_lines:
+        return False
+    return all(line.startswith(("!", "%")) for line in code_lines)
+
+
+def _output_stream_text(output: dict) -> str:
+    text = output.get("text", "")
+    return "".join(text) if isinstance(text, list) else str(text)
+
+
+def _output_plain_text(output: dict) -> str | None:
+    plain = output.get("data", {}).get(_OUTPUT_PLAIN_MIME)
+    if plain is None:
+        return None
+    return "".join(plain) if isinstance(plain, list) else str(plain)
+
+
+def clean_output_text(text: str) -> str:
+    text = ANSI_ESCAPE_RE.sub("", text).replace("\r\n", "\n")
+
+    lines: list[str] = []
+    for raw_line in text.split("\n"):
+        # Progress bars overwrite via \r; keep only the final rendered segment.
+        segment = raw_line.split("\r")[-1]
+        if OUTPUT_NOISE_LINE_RE.match(segment):
+            continue
+        lines.append(segment.rstrip())
+
+    collapsed: list[str] = []
+    previous_blank = False
+    for line in lines:
+        is_blank = not line
+        if is_blank and previous_blank:
+            continue
+        collapsed.append(line)
+        previous_blank = is_blank
+
+    return "\n".join(collapsed).strip("\n")
+
+
+def extract_cell_output(cell: dict) -> str | None:
+    """Return cleaned textual output for a code cell, or None to render nothing."""
+    if cell.get("cell_type") != "code":
+        return None
+    if OUTPUT_SKIP_TAGS & cell_tags(cell):
+        return None
+    if is_command_cell(cell_source(cell)):
+        return None
+
+    chunks: list[str] = []
+    for output in cell.get("outputs", []):
+        otype = output.get("output_type")
+        if otype == "stream":
+            if output.get("name") == "stderr":
+                continue
+            chunks.append(_output_stream_text(output))
+        elif otype in ("execute_result", "display_data"):
+            plain = _output_plain_text(output)
+            if plain is None:
+                continue
+            if OUTPUT_REPR_NOISE_RE.match(plain.strip()):
+                continue
+            chunks.append(plain if plain.endswith("\n") else plain + "\n")
+        # 'error' outputs (tracebacks) are intentionally dropped.
+
+    cleaned = clean_output_text("".join(chunks))
+    return cleaned or None
+
+
+def render_output_block(output_text: str) -> str:
+    fence = "```"
+    while fence in output_text:
+        fence += "`"
+    return f"{fence}console\n{output_text}\n{fence}"
+
+
 def validate_frontmatter(frontmatter: dict[str, object], *, source: str) -> list[str]:
     errors: list[str] = []
 

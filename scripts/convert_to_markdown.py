@@ -18,7 +18,9 @@ from cookbook_utils import (
     cell_source,
     discover_slug_paths,
     ensure_colab_url,
+    extract_cell_output,
     process_markdown_content,
+    render_output_block,
     transform_markdown_for_mintlify,
     try_split_frontmatter,
 )
@@ -71,6 +73,9 @@ def notebook_to_mdx(notebook: dict) -> str:
             code = cell_source(cell).rstrip("\n")
             if code:
                 body_parts.append(f"```python\n{code}\n```")
+                output_text = extract_cell_output(cell)
+                if output_text:
+                    body_parts.append(render_output_block(output_text))
 
     if not frontmatter:
         raise ValueError("missing frontmatter in first markdown cell")

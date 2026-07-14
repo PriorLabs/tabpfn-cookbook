@@ -214,6 +214,11 @@ Xtr_nat, Xte_nat, ytr_nat, yte_nat = train_test_split(
 )
 ```
 
+```console
+Loading NATICUSdroid ...
+Shape: (7491, 86)  |  positive rate: 35.0%
+```
+
 ### Baseline
 
 *Default TabPFN on all 86 features, scored on ROC AUC.*
@@ -222,6 +227,10 @@ Xtr_nat, Xte_nat, ytr_nat, yte_nat = train_test_split(
 nat_rows = []
 nat_rows.append(run("baseline", Xtr_nat, Xte_nat, ytr_nat, yte_nat))
 print(f"ROC AUC: {nat_rows[-1]['roc_auc']:.4f}")
+```
+
+```console
+ROC AUC: 0.9883
 ```
 
 ### Thinking mode
@@ -239,12 +248,23 @@ nat_rows.append(run(
 print(f"ROC AUC: {nat_rows[-1]['roc_auc']:.4f}")
 ```
 
+```console
+ROC AUC: 0.9902
+```
+
 ### Results
 
 ```python
 df_nat = make_results_df(nat_rows, "roc_auc")
 show(df_nat, "roc_auc",
      cols=["config", "roc_auc", "f1", "n_features", "secs", "rel_improve_%"])
+```
+
+```console
+                         roc_auc      f1  n_features  secs  rel_improve_%
+config
+baseline                  0.9883  0.9230          86   4.6          0.000
+thinking high (roc_auc)   0.9902  0.9339          86  11.6         16.492
 ```
 
 ```python
@@ -283,12 +303,21 @@ Xtr_cpn, Xte_cpn, ytr_cpn, yte_cpn = train_test_split(
 )
 ```
 
+```console
+Loading in-vehicle coupon recommendation ...
+Shape: (12684, 24)  |  positive rate: 43.2%
+```
+
 ### Baseline
 
 ```python
 cpn_rows = []
 cpn_rows.append(run("baseline", Xtr_cpn, Xte_cpn, ytr_cpn, yte_cpn))
 print(f"ROC AUC: {cpn_rows[-1]['roc_auc']:.4f}")
+```
+
+```console
+ROC AUC: 0.8495
 ```
 
 ### Thinking mode
@@ -304,12 +333,23 @@ cpn_rows.append(run(
 print(f"ROC AUC: {cpn_rows[-1]['roc_auc']:.4f}")
 ```
 
+```console
+ROC AUC: 0.8535
+```
+
 ### Results
 
 ```python
 df_cpn = make_results_df(cpn_rows, "roc_auc")
 show(df_cpn, "roc_auc",
      cols=["config", "roc_auc", "f1", "n_features", "secs", "rel_improve_%"])
+```
+
+```console
+                         roc_auc      f1  n_features  secs  rel_improve_%
+config
+baseline                  0.8495  0.7216          24   3.0         0.0000
+thinking high (roc_auc)   0.8535  0.7329          24  14.0         2.6523
 ```
 
 ```python

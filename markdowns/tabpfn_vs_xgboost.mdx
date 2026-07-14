@@ -170,3 +170,10 @@ The table below collects ROC AUC, fit time, and predict time for each model. ROC
 ```python
 print(pd.DataFrame(results).to_string(index=False))
 ```
+
+```console
+                          Model ROC-AUC Fit time Predict time                                         Notes
+    TabPFN v3 (client, default)  0.8281    0.62s        1.23s                                    hosted API
+    XGBoost (sensible defaults)  0.8142    0.51s        0.01s                              n_estimators=100
+XGBoost (CV-tuned n_estimators)  0.8154    4.78s        0.00s 5-fold CV with early stopping, best_rounds=76
+```
