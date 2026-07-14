@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from convert_to_markdown import convert_notebook_to_mdx
 from cookbook_utils import (
     author_block_is_current,
+    colab_block_is_current,
     parse_mdx_frontmatter,
     process_markdown_content,
     validate_frontmatter,
@@ -161,6 +162,9 @@ def validate_markdown_files(paths: list[Path]) -> bool:
 
         has_notebook = (NOTEBOOKS_DIR / f"{path.stem}.ipynb").exists()
         for error in author_block_is_current(content, source=label, has_notebook=has_notebook):
+            print(error, file=sys.stderr)
+            ok = False
+        for error in colab_block_is_current(content, source=label, has_notebook=has_notebook):
             print(error, file=sys.stderr)
             ok = False
 

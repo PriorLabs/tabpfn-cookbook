@@ -1,9 +1,21 @@
 ---
-title: "Get Started with Predictive Distribution"
-description: "Learn how to extract predictive distribtuions with TabPFNRegressor"
+title: Get Started with Predictive Distribution
+description: Learn how to extract predictive distribtuions with TabPFNRegressor
 cookbookTags:
-  - regression
+- regression
+colab_url: https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/predictive_distribution.ipynb
 ---
+{/* cookbook-colab:start process_markdown.py */}
+<div className="cookbook-colab">
+  <a href="https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/predictive_distribution.ipynb" className="cookbook-colab-button" target="_blank" rel="noopener noreferrer">
+    <img
+      className="cookbook-colab-badge"
+      src="https://colab.research.google.com/assets/colab-badge.svg"
+      alt="Open In Colab"
+    />
+  </a>
+</div>
+{/* cookbook-colab:end process_markdown.py */}
 *Going beyond point estimates to the full predictive distribution.*
 
 A TabPFN regressor does not just output a single number per row. It predicts a full distribution over the target, which we can summarise as a mean, read off at chosen quantiles, or visualise directly. To generate point-estimates the `TabPFNRegressor` object takes the mean of the predicted distribution.

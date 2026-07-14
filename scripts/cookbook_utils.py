@@ -10,11 +10,21 @@ from pathlib import Path
 import yaml
 
 ALLOWED_FRONTMATTER_KEYS = frozenset(
-    {"title", "description", "icon", "cookbookTags", "feature_in_doc", "authors"}
+    {
+        "title",
+        "description",
+        "icon",
+        "cookbookTags",
+        "feature_in_doc",
+        "authors",
+        "colab_url",
+    }
 )
 AUTHOR_SOCIAL_KEYS = frozenset({"github", "linkedin", "twitter", "x"})
 AUTHOR_BLOCK_START = "{/* cookbook-authors:start process_markdown.py */}"
 AUTHOR_BLOCK_END = "{/* cookbook-authors:end process_markdown.py */}"
+COLAB_BLOCK_START = "{/* cookbook-colab:start process_markdown.py */}"
+COLAB_BLOCK_END = "{/* cookbook-colab:end process_markdown.py */}"
 COOKBOOKS_REPO = "PriorLabs/prior-cookbook"
 COOKBOOKS_RAW_BRANCH = "main"
 COOKBOOKS_RAW_BASE_URL = (
@@ -161,6 +171,81 @@ def render_authors_block(authors: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def dump_frontmatter_block(frontmatter: dict[str, object]) -> str:
+    dumped = yaml.safe_dump(
+        frontmatter,
+        sort_keys=False,
+        allow_unicode=True,
+        default_flow_style=False,
+    )
+    return f"---\n{dumped.rstrip()}\n---"
+
+
+def colab_url_for_notebook(slug: str) -> str:
+    return (
+        f"https://colab.research.google.com/github/{COOKBOOKS_REPO}/blob/"
+        f"{COOKBOOKS_RAW_BRANCH}/notebooks/{slug}.ipynb"
+    )
+
+
+def ensure_colab_url(content: str, slug: str) -> str:
+    """Set frontmatter ``colab_url`` for a notebook-backed recipe."""
+    _, body, _ = split_mdx_document(content)
+    frontmatter = parse_frontmatter_text(content)
+    frontmatter["colab_url"] = colab_url_for_notebook(slug)
+    if body:
+        return f"{dump_frontmatter_block(frontmatter)}\n{body.lstrip(chr(10))}"
+    return f"{dump_frontmatter_block(frontmatter)}\n"
+
+
+def strip_colab_block(body: str) -> str:
+    pattern = re.compile(
+        rf"\s*{re.escape(COLAB_BLOCK_START)}[\s\S]*?{re.escape(COLAB_BLOCK_END)}\s*\n?",
+        re.MULTILINE,
+    )
+    return pattern.sub("", body, count=1).lstrip("\n")
+
+
+def extract_colab_block(body: str) -> str | None:
+    match = re.search(
+        rf"{re.escape(COLAB_BLOCK_START)}([\s\S]*?){re.escape(COLAB_BLOCK_END)}",
+        body,
+    )
+    if not match:
+        return None
+    return f"{COLAB_BLOCK_START}{match.group(1)}{COLAB_BLOCK_END}"
+
+
+def render_colab_block(colab_url: str) -> str:
+    safe_url = html.escape(colab_url, quote=True)
+    lines = [
+        COLAB_BLOCK_START,
+        '<div className="cookbook-colab">',
+        f'  <a href="{safe_url}" className="cookbook-colab-button" '
+        'target="_blank" rel="noopener noreferrer">',
+        '    <img',
+        '      className="cookbook-colab-badge"',
+        '      src="https://colab.research.google.com/assets/colab-badge.svg"',
+        '      alt="Open In Colab"',
+        "    />",
+        "  </a>",
+        "</div>",
+        COLAB_BLOCK_END,
+    ]
+    return "\n".join(lines)
+
+
+def inject_colab_block(body: str, colab_url: str | None) -> str:
+    body = strip_colab_block(body)
+    if not colab_url or not str(colab_url).strip():
+        return body
+
+    block = render_colab_block(str(colab_url).strip())
+    if body:
+        return f"{block}\n{body}"
+    return f"{block}\n"
+
+
 def inject_author_block(body: str, authors: list[dict[str, str]] | None) -> str:
     body = strip_author_block(body)
     if not authors:
@@ -176,7 +261,12 @@ def process_markdown_content(content: str) -> str:
     frontmatter_block, body, _ = split_mdx_document(content)
     frontmatter = parse_frontmatter_text(content)
     authors = frontmatter.get("authors")
+    colab_url = frontmatter.get("colab_url")
+
     new_body = inject_author_block(body, authors if isinstance(authors, list) else None)
+    new_body = inject_colab_block(
+        new_body, str(colab_url) if isinstance(colab_url, str) else None
+    )
 
     if new_body:
         return f"{frontmatter_block}\n{new_body}"
@@ -220,6 +310,61 @@ def author_block_is_current(
             f"Run: {remediation}"
         ]
 
+    return []
+
+
+def colab_block_is_current(
+    content: str,
+    *,
+    source: str,
+    has_notebook: bool = False,
+) -> list[str]:
+    frontmatter = parse_frontmatter_text(content)
+    _, body, _ = split_mdx_document(content)
+    colab_url = frontmatter.get("colab_url")
+    existing = extract_colab_block(body)
+    slug = Path(source).stem
+    remediation = author_remediation_command(slug=slug, has_notebook=has_notebook)
+
+    if has_notebook:
+        expected_url = colab_url_for_notebook(slug)
+        if not isinstance(colab_url, str) or colab_url.strip() != expected_url:
+            return [
+                f"{source}: notebook recipes must set colab_url to {expected_url!r}. "
+                f"Run: {remediation}"
+            ]
+        expected = render_colab_block(expected_url)
+        if not existing:
+            return [
+                f"{source}: colab_url is set but Open in Colab button is missing. "
+                f"Run: {remediation}"
+            ]
+        if normalize_author_block(existing) != normalize_author_block(expected):
+            return [
+                f"{source}: Open in Colab button is out of date. "
+                f"Run: {remediation}"
+            ]
+        return []
+
+    if not colab_url:
+        if existing:
+            return [f"{source}: remove stale Open in Colab button or add colab_url to frontmatter"]
+        return []
+
+    if not isinstance(colab_url, str) or not colab_url.strip():
+        return [f"{source}: colab_url must be a non-empty string when set"]
+
+    expected = render_colab_block(colab_url.strip())
+    if not existing:
+        return [
+            f"{source}: colab_url is set but Open in Colab button is missing. "
+            f"Run: {remediation}"
+        ]
+    if normalize_author_block(existing) != normalize_author_block(expected):
+        return [
+            f"{source}: Open in Colab button is out of date. "
+            f"Run: {remediation}"
+        ]
     return []
 
 
@@ -268,6 +413,13 @@ def validate_frontmatter(frontmatter: dict[str, object], *, source: str) -> list
 
     if "feature_in_doc" in frontmatter and not str(frontmatter["feature_in_doc"]).strip():
         errors.append(f"{source}: feature_in_doc must be a non-empty string when set")
+
+    if "colab_url" in frontmatter:
+        value = frontmatter.get("colab_url")
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"{source}: colab_url must be a non-empty string when set")
+        elif not value.strip().startswith("https://colab.research.google.com/"):
+            errors.append(f"{source}: colab_url must be a Google Colab URL")
 
     tags = frontmatter.get("cookbookTags")
     if tags is not None:

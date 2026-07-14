@@ -1,9 +1,22 @@
 ---
-title: "Interpreting Results with TabPFN"
-description: "Learn how to use the standard interpretability toolkit with TabPFN for explainable results"
+title: Interpreting Results with TabPFN
+description: Learn how to use the standard interpretability toolkit with TabPFN for
+  explainable results
 cookbookTags:
-  - interpretability
+- interpretability
+colab_url: https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/interpret_results.ipynb
 ---
+{/* cookbook-colab:start process_markdown.py */}
+<div className="cookbook-colab">
+  <a href="https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/interpret_results.ipynb" className="cookbook-colab-button" target="_blank" rel="noopener noreferrer">
+    <img
+      className="cookbook-colab-badge"
+      src="https://colab.research.google.com/assets/colab-badge.svg"
+      alt="Open In Colab"
+    />
+  </a>
+</div>
+{/* cookbook-colab:end process_markdown.py */}
 *With SHAP values and partial dependence plots.*
 
 A strong classifier is only useful in practice if you can explain what it is doing. TabPFN works with the standard interpretability toolkit, so the same SHAP and partial-dependence techniques you would use on any model apply directly. Working with a coronary-disease dataset, this notebook covers global feature importance, how predictions respond to each feature, and how to explain individual patient predictions.

@@ -1,10 +1,22 @@
 ---
-title: "TabPFN vs XGBoost"
-description: "Compare TabPFN results with XGBoost using an OpenML Dataset"
-icon: "bolt"
+title: TabPFN vs XGBoost
+description: Compare TabPFN results with XGBoost using an OpenML Dataset
+icon: bolt
 cookbookTags:
-  - benchmark
+- benchmark
+colab_url: https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/tabpfn_vs_xgboost.ipynb
 ---
+{/* cookbook-colab:start process_markdown.py */}
+<div className="cookbook-colab">
+  <a href="https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/tabpfn_vs_xgboost.ipynb" className="cookbook-colab-button" target="_blank" rel="noopener noreferrer">
+    <img
+      className="cookbook-colab-badge"
+      src="https://colab.research.google.com/assets/colab-badge.svg"
+      alt="Open In Colab"
+    />
+  </a>
+</div>
+{/* cookbook-colab:end process_markdown.py */}
 *A benchmark on a single tabular dataset.*
 
 XGBoost is a commonly-used model for tabular data, so the natural question is how TabPFN compares. This notebook runs both on the same dataset and the same split, measuring ROC AUC alongside fit and predict time. TabPFN runs through the hosted API client (`tabpfn-client`), so its timings include the network round-trip to Prior Labs' servers rather than pure local compute. To keep things fair on accuracy, XGBoost gets two chances: a sensible hand-picked configuration and a properly cross-validated one. Every result is collected into a single table at the end.

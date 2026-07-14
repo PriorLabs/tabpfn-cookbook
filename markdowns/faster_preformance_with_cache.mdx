@@ -1,9 +1,21 @@
 ---
-title: "Faster Inference with KV Cache"
-description: "Get a quick introduction into faster inference with fit_with_cache"
+title: Faster Inference with KV Cache
+description: Get a quick introduction into faster inference with fit_with_cache
 cookbookTags:
-  - performance
+- performance
+colab_url: https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/faster_preformance_with_cache.ipynb
 ---
+{/* cookbook-colab:start process_markdown.py */}
+<div className="cookbook-colab">
+  <a href="https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/faster_preformance_with_cache.ipynb" className="cookbook-colab-button" target="_blank" rel="noopener noreferrer">
+    <img
+      className="cookbook-colab-badge"
+      src="https://colab.research.google.com/assets/colab-badge.svg"
+      alt="Open In Colab"
+    />
+  </a>
+</div>
+{/* cookbook-colab:end process_markdown.py */}
 *Build the model's internal representation once at fit time, reuse it at predict.*
 
 By default TabPFN recomputes its representation of the training set on every call to `predict`. The `fit_with_cache` mode does that work once, during `fit`, and caches the result, so the first prediction is noticeably faster. This short notebook benchmarks the two modes side by side on the same data.

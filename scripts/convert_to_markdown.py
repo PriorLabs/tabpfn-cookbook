@@ -15,7 +15,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from cookbook_utils import cell_source, process_markdown_content, transform_markdown_for_mintlify
+from cookbook_utils import (
+    cell_source,
+    ensure_colab_url,
+    process_markdown_content,
+    transform_markdown_for_mintlify,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOKS_DIR = ROOT / "notebooks"
@@ -94,7 +99,7 @@ def notebook_to_mdx(notebook: dict) -> str:
 
 def convert_notebook_to_mdx(notebook_path: Path) -> str:
     notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
-    return notebook_to_mdx(notebook)
+    return ensure_colab_url(notebook_to_mdx(notebook), notebook_path.stem)
 
 
 def convert_notebook(notebook_path: Path) -> Path:

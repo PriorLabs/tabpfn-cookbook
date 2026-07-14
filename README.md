@@ -12,7 +12,7 @@ Every recipe needs **YAML frontmatter** so it can be published on the docs site.
 - **Markdown-only recipes** — top of `markdowns/*.mdx`
 
 **Required:** `title`, `description`  
-**Optional:** `icon`, `cookbookTags`, `feature_in_doc`, `authors`
+**Optional:** `icon`, `cookbookTags`, `feature_in_doc`, `authors`, `colab_url`
 
 See [Frontmatter](#frontmatter) for the full template and field descriptions.
 
@@ -34,6 +34,18 @@ Supported social fields: `github`, `linkedin`, `x` (`twitter` is also accepted f
 - **Markdown-only recipes** — after adding or editing `authors` in frontmatter, run `process_markdown.py`.
 
 Validation fails if `authors` is in frontmatter but the rendered author block is missing or out of date.
+
+### Open in Colab
+
+Notebook recipes get a `colab_url` automatically when you run `convert_to_markdown.py`. It points at the notebook on `main`:
+
+```text
+https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/<slug>.ipynb
+```
+
+That value is written to frontmatter and turned into an **Open in Colab** badge at the top-right of the docs recipe page. Do not set `colab_url` by hand for notebook recipes — conversion owns it.
+
+Markdown-only recipes can optionally set `colab_url` themselves; run `process_markdown.py` so the button is injected.
 
 ### Embedded videos
 
@@ -119,11 +131,13 @@ authors:
   - name: Alex Rivera
     github: https://github.com/priorlabs
     linkedin: https://www.linkedin.com/company/prior-labs
+colab_url: "https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/my-recipe.ipynb"
 ---
 ```
 
 Required: `title`, `description`  
-Optional: `icon`, `cookbookTags`, `feature_in_doc`, `authors`
+Optional: `icon`, `cookbookTags`, `feature_in_doc`, `authors`  
+Auto-set for notebooks by `convert_to_markdown.py`: `colab_url`
 
 ## Workflow
 
