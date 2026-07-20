@@ -1,0 +1,179 @@
+---
+title: TabPFN vs XGBoost
+description: Compare TabPFN results with XGBoost using an OpenML Dataset
+icon: bolt
+cookbookTags:
+- benchmark
+colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/tabpfn_vs_xgboost.ipynb
+---
+{/* cookbook-colab:start process_markdown.py */}
+<div className="cookbook-colab">
+  <a href="https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/tabpfn_vs_xgboost.ipynb" className="cookbook-colab-button" target="_blank" rel="noopener noreferrer">
+    <svg className="cookbook-colab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="#F9AB00" d="M16.9414 4.9757a7.033 7.033 0 0 0-4.9308 2.0646 7.033 7.033 0 0 0-.1232 9.8068l2.395-2.395a3.6455 3.6455 0 0 1 5.1497-5.1478l2.397-2.3989a7.033 7.033 0 0 0-4.8877-1.9297zM7.07 4.9855a7.033 7.033 0 0 0-4.8878 1.9316l2.3911 2.3911a3.6434 3.6434 0 0 1 5.0227.1271l1.7341-2.9737-.0997-.0802A7.033 7.033 0 0 0 7.07 4.9855zm15.0093 2.1721l-2.3892 2.3911a3.6455 3.6455 0 0 1-5.1497 5.1497l-2.4067 2.4068a7.0362 7.0362 0 0 0 9.9456-9.9476zM1.932 7.1674a7.033 7.033 0 0 0-.002 9.6816l2.397-2.397a3.6434 3.6434 0 0 1-.004-4.8916zm7.664 7.4235c-1.38 1.3816-3.5863 1.411-5.0168.1134l-2.397 2.395c2.4693 2.3328 6.263 2.5753 9.0072.5455l.1368-.1115z"/></svg>
+    <span className="cookbook-colab-label">Open in Colab</span>
+  </a>
+</div>
+{/* cookbook-colab:end process_markdown.py */}
+*A benchmark on a single tabular dataset.*
+
+XGBoost is a commonly-used model for tabular data, so the natural question is how TabPFN compares. This notebook runs both on the same dataset and the same split, measuring ROC AUC alongside fit and predict time. TabPFN runs through the hosted API client (`tabpfn-client`), so its timings include the network round-trip to Prior Labs' servers rather than pure local compute. To keep things fair on accuracy, XGBoost gets two chances: a sensible hand-picked configuration and a properly cross-validated one. Every result is collected into a single table at the end.
+
+## Setup
+
+*Installing the TabPFN client and XGBoost.*
+
+```python
+!pip install tabpfn-client xgboost scikit-learn
+```
+
+## Imports and Data
+
+*Loading the dataset from OpenML and creating a stratified train/test split.*
+
+We fetch the German Credit dataset directly from OpenML and split it with stratification so the class balance is preserved in both halves. A single `results` list accumulates each model's score and timing for the final comparison.
+
+```python
+import time
+import os
+
+import pandas as pd
+import xgboost as xgb
+
+from google.colab import userdata
+from sklearn.datasets import fetch_openml
+from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import train_test_split
+from tabpfn_client import TabPFNClassifier
+
+X, y = fetch_openml(data_id=46562, as_frame=True, return_X_y=True)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y, random_state=42
+)
+
+results = []
+```
+
+## Authentication
+
+*Setting `TABPFN_TOKEN` so the client can reach the API.*
+
+The client reads the API key from the `TABPFN_TOKEN` environment variable, we use the `set_access_token` helper. Here we pull it from Colab secrets.
+
+```python
+from tabpfn_client import set_access_token
+set_access_token(userdata.get('TABPFN_TOKEN'))
+```
+
+## TabPFN, Default Settings
+
+*No configuration, no tuning, just fit and predict.*
+
+We fit `TabPFNClassifier` from the hosted client with its defaults and time both the fit and the prediction. Because the model runs on Prior Labs' servers, these timings include the round-trip to upload the data and return predictions. The ROC AUC and timings go straight into the results table.
+
+```python
+tabpfn = TabPFNClassifier()
+t0 = time.perf_counter()
+tabpfn.fit(X_train, y_train)
+fit_tabpfn = time.perf_counter() - t0
+t0 = time.perf_counter()
+proba_tabpfn = tabpfn.predict_proba(X_test)[:, 1]
+predict_tabpfn = time.perf_counter() - t0
+results.append(
+    {
+        "Model": "TabPFN v3 (client, default)",
+        "ROC-AUC": f"{roc_auc_score(y_test, proba_tabpfn):.4f}",
+        "Fit time": f"{fit_tabpfn:.2f}s",
+        "Predict time": f"{predict_tabpfn:.2f}s",
+        "Notes": "hosted API",
+    }
+)
+```
+
+## XGBoost, Sensible Defaults
+
+*A reasonable hand-picked configuration with 100 boosting rounds.*
+
+This is the configuration most practitioners reach for as a starting point: a moderate learning rate, depth-six trees, light subsampling, and 100 rounds. It represents XGBoost used with no tuning effort.
+
+```python
+xgb_params = {
+    "learning_rate": 0.05,
+    "max_depth": 6,
+    "min_child_weight": 1,
+    "subsample": 0.9,
+    "colsample_bytree": 0.9,
+    "reg_lambda": 1.0,
+    "tree_method": "hist",
+    "eval_metric": "auc",
+    "objective": "binary:logistic",
+    "seed": 42,
+}
+dtrain = xgb.DMatrix(X_train, label=y_train)
+dtest = xgb.DMatrix(X_test, label=y_test)
+t0 = time.perf_counter()
+booster = xgb.train(xgb_params, dtrain, num_boost_round=100)
+fit_xgb = time.perf_counter() - t0
+t0 = time.perf_counter()
+proba_xgb = booster.predict(dtest)
+predict_xgb = time.perf_counter() - t0
+results.append(
+    {
+        "Model": "XGBoost (sensible defaults)",
+        "ROC-AUC": f"{roc_auc_score(y_test, proba_xgb):.4f}",
+        "Fit time": f"{fit_xgb:.2f}s",
+        "Predict time": f"{predict_xgb:.2f}s",
+        "Notes": "n_estimators=100",
+    }
+)
+```
+
+## XGBoost, CV-Tuned
+
+*Choosing the number of trees with cross-validation and early stopping.*
+
+To give XGBoost a fair shot, we tune the number of boosting rounds using 5-fold cross-validation with early stopping. This mirrors what a careful practitioner would actually ship.
+
+```python
+t0 = time.perf_counter()
+cv_result = xgb.cv(
+    xgb_params,
+    dtrain,
+    num_boost_round=1000,
+    nfold=5,
+    early_stopping_rounds=20,
+    seed=42,
+)
+best_rounds = len(cv_result)
+booster_tuned = xgb.train(xgb_params, dtrain, num_boost_round=best_rounds)
+fit_xgb_tuned = time.perf_counter() - t0
+t0 = time.perf_counter()
+proba_xgb_tuned = booster_tuned.predict(dtest)
+predict_xgb_tuned = time.perf_counter() - t0
+results.append(
+    {
+        "Model": "XGBoost (CV-tuned n_estimators)",
+        "ROC-AUC": f"{roc_auc_score(y_test, proba_xgb_tuned):.4f}",
+        "Fit time": f"{fit_xgb_tuned:.2f}s",
+        "Predict time": f"{predict_xgb_tuned:.2f}s",
+        "Notes": f"5-fold CV with early stopping, best_rounds={best_rounds}",
+    }
+)
+```
+
+## Results
+
+*Comparing accuracy and speed across all three models.*
+
+The table below collects ROC AUC, fit time, and predict time for each model. ROC AUC measures how well a model ranks positive cases above negative ones across every decision threshold: 1.0 is a perfect ranking, 0.5 is no better than a coin flip, so higher is better. On this dataset TabPFN reaches the highest ROC AUC with no tuning at all. XGBoost is faster on data this small, but TabPFN's times here are dominated by the hosted API round-trip rather than compute, and even after cross-validation XGBoost does not close the accuracy gap.
+
+```python
+print(pd.DataFrame(results).to_string(index=False))
+```
+
+```console
+                          Model ROC-AUC Fit time Predict time                                         Notes
+    TabPFN v3 (client, default)  0.8281    0.62s        1.23s                                    hosted API
+    XGBoost (sensible defaults)  0.8142    0.51s        0.01s                              n_estimators=100
+XGBoost (CV-tuned n_estimators)  0.8154    4.78s        0.00s 5-fold CV with early stopping, best_rounds=76
+```
