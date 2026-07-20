@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
-"""Materialize cookbook markdown into a docs branch for Mintlify previews.
+"""Materialize cookbook markdown into a docs branch for Mintlify.
 
 Mintlify only serves files present on the docs branch — it does not run
 ``fetch-cookbooks.mjs`` with GitHub tokens. This script therefore copies
 generated markdown into ``cookbook/``, runs ``npm run sync``, and pushes
-the result to a docs preview (or staging) branch.
+the result to a bot-managed docs branch.
+
+Modes:
+
+* Ephemeral preview (``--preview-branch cookbook/pr-<N> --force-push``):
+  force-push a throwaway branch and let the caller trigger a Mintlify preview.
+* Publish via PR (``--open-pr``): force-push a bot-managed sync branch and
+  open/reuse a pull request into ``--base-branch``. Skips push and PR when
+  cookbooks are already in sync. The base branch is never written to directly.
+* Direct publish: pass the same value for ``--base-branch`` and
+  ``--preview-branch`` (plain push, no ``--force-push``). Unused by CI today;
+  kept for local/manual use.
 """
 
 from __future__ import annotations
@@ -41,6 +52,25 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Pull request number for commit message (optional for merge refreshes).",
+    )
+    parser.add_argument(
+        "--open-pr",
+        action="store_true",
+        help=(
+            "Open (or reuse) a pull request from --preview-branch into --base-branch "
+            "on the docs repo instead of publishing straight to the base branch. "
+            "Requires the gh CLI and GH_TOKEN in the environment."
+        ),
+    )
+    parser.add_argument(
+        "--force-push",
+        action="store_true",
+        help=(
+            "Force-push the target branch. Use only for ephemeral bot branches "
+            "(e.g. cookbook/pr-<N>). A direct push to a shared branch (Option A) "
+            "should omit this so a diverged branch is rejected instead of clobbered. "
+            "Implied when --open-pr is set."
+        ),
     )
     parser.add_argument(
         "--skip-npm",
@@ -89,10 +119,84 @@ def run_docs_sync(docs_dir: Path) -> None:
     run(["npm", "run", "sync"], cwd=docs_dir)
 
 
-def commit_message(*, pr_number: int | None, repo: str, ref: str) -> str:
+def commit_message(
+    *,
+    pr_number: int | None,
+    repo: str,
+    ref: str,
+    open_pr: bool = False,
+) -> str:
+    if open_pr and pr_number is not None:
+        return f"Sync cookbooks from prior-cookbook#{pr_number} ({repo}@{ref})"
     if pr_number is not None:
         return f"Cookbook preview for prior-cookbook#{pr_number} ({repo}@{ref})"
     return f"Refresh cookbooks from {repo}@{ref}"
+
+
+def write_github_output(**values: str) -> None:
+    """Expose step outputs to the surrounding GitHub Actions job (no-op locally)."""
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        for key, value in values.items():
+            handle.write(f"{key}={value}\n")
+
+
+def find_open_pull_request(*, base: str, head: str) -> str:
+    """Return the URL of an open PR from head into base, or empty string."""
+    return subprocess.run(
+        [
+            "gh", "pr", "list",
+            "-R", DOCS_REPO,
+            "--head", head,
+            "--base", base,
+            "--state", "open",
+            "--json", "url",
+            "--jq", '.[0].url // ""',
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def ensure_pull_request(*, base: str, head: str, title: str, body: str) -> tuple[str, bool]:
+    """Return (pr_url, created). Reuses an open PR if one already targets base<-head."""
+    existing = find_open_pull_request(base=base, head=head)
+    if existing:
+        return existing, False
+
+    created = subprocess.run(
+        [
+            "gh", "pr", "create",
+            "-R", DOCS_REPO,
+            "--head", head,
+            "--base", base,
+            "--title", title,
+            "--body", body,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    url = created.splitlines()[-1] if created else ""
+    return url, True
+
+
+def close_open_pull_request(*, base: str, head: str, comment: str) -> str:
+    """Close an open PR from head into base if one exists. Return its URL or empty."""
+    existing = find_open_pull_request(base=base, head=head)
+    if not existing:
+        return ""
+    run(
+        [
+            "gh", "pr", "close", existing,
+            "-R", DOCS_REPO,
+            "--comment", comment,
+        ]
+    )
+    return existing
 
 
 def stage_preview_files(docs_dir: Path) -> None:
@@ -113,6 +217,14 @@ def main() -> int:
         print("DOCS_REPO_TOKEN is required.", file=sys.stderr)
         return 1
 
+    if args.open_pr and args.preview_branch == args.base_branch:
+        print(
+            "--open-pr requires --preview-branch to differ from --base-branch so the "
+            "base branch (e.g. main) is never written to directly.",
+            file=sys.stderr,
+        )
+        return 1
+
     remote = f"https://x-access-token:{token}@github.com/{DOCS_REPO}.git"
 
     configure_git_identity(docs_dir)
@@ -128,7 +240,8 @@ def main() -> int:
 
     stage_preview_files(docs_dir)
     diff = subprocess.run(["git", "diff", "--staged", "--quiet"], cwd=docs_dir, check=False)
-    if diff.returncode != 0:
+    changed = diff.returncode != 0
+    if changed:
         run(
             [
                 "git",
@@ -138,6 +251,7 @@ def main() -> int:
                     pr_number=args.pr_number,
                     repo=args.cookbooks_repo,
                     ref=args.cookbooks_ref,
+                    open_pr=args.open_pr,
                 ),
             ],
             cwd=docs_dir,
@@ -145,10 +259,78 @@ def main() -> int:
     else:
         print("No docs changes to commit.")
 
-    run(["git", "push", "origin", args.preview_branch, "--force"], cwd=docs_dir)
+    # Force-push only for ephemeral bot branches (--force-push) or PR sync
+    # branches (--open-pr). A direct push to a shared branch is a plain push so a
+    # diverged branch is rejected rather than clobbered. For --open-pr with no
+    # content changes, skip push/create and close any stale open sync PR.
+    if args.open_pr and not changed:
+        closed = close_open_pull_request(
+            base=args.base_branch,
+            head=args.preview_branch,
+            comment=(
+                f"Closed automatically: cookbooks from `{args.cookbooks_repo}@"
+                f"{args.cookbooks_ref}` now match `{args.base_branch}` on `{DOCS_REPO}`."
+            ),
+        )
+        if closed:
+            print(f"Closed stale docs sync PR: {closed}")
+        else:
+            print(
+                f"No cookbook changes relative to {args.base_branch}; "
+                "skipping push and PR."
+            )
+        write_github_output(
+            head_branch=args.preview_branch,
+            changed="false",
+            pr_url="",
+            pr_created="false",
+            pr_closed=closed,
+        )
+        return 0
 
+    push_cmd = ["git", "push", "origin", args.preview_branch]
+    if args.force_push or args.open_pr:
+        push_cmd.append("--force")
+    run(push_cmd, cwd=docs_dir)
     print(f"Pushed docs branch {args.preview_branch}")
     print(f"Cookbook source: {args.cookbooks_repo}@{args.cookbooks_ref}")
+
+    pr_url = ""
+    pr_created = False
+    if args.open_pr:
+        if args.pr_number is not None:
+            title = (
+                f"Sync cookbooks from prior-cookbook#{args.pr_number} "
+                f"({args.cookbooks_repo}@{args.cookbooks_ref})"
+            )
+            body = (
+                f"Automated cookbook sync from `{args.cookbooks_repo}@{args.cookbooks_ref}` "
+                f"(prior-cookbook#{args.pr_number}).\n\n"
+                f"Merging this PR publishes the latest cookbooks to `{args.base_branch}` "
+                f"on `{DOCS_REPO}`."
+            )
+        else:
+            title = f"Sync cookbooks from {args.cookbooks_repo}@{args.cookbooks_ref}"
+            body = (
+                f"Automated cookbook sync from `{args.cookbooks_repo}@{args.cookbooks_ref}`.\n\n"
+                f"Merging this PR publishes the latest cookbooks to `{args.base_branch}` "
+                f"on `{DOCS_REPO}`."
+            )
+        pr_url, pr_created = ensure_pull_request(
+            base=args.base_branch,
+            head=args.preview_branch,
+            title=title,
+            body=body,
+        )
+        action = "Opened" if pr_created else "Updated existing"
+        print(f"{action} docs PR into {args.base_branch}: {pr_url or '(no url returned)'}")
+
+    write_github_output(
+        head_branch=args.preview_branch,
+        changed=str(changed).lower(),
+        pr_url=pr_url,
+        pr_created=str(pr_created).lower(),
+    )
     return 0
 
 

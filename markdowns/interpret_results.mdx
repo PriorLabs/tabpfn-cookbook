@@ -178,6 +178,10 @@ fig.suptitle(
 plt.show()
 ```
 
+```console
+Partial dependence for: ['Blocked vessels', 'Max heart rate', 'ST depression', 'Cholesterol']
+```
+
 ![Partial dependence plots](https://raw.githubusercontent.com/PriorLabs/prior-cookbook/main/visuals/interpret_results/partial-dependence.png)
 
 ## Explaining Individual Predictions
@@ -226,9 +230,22 @@ def describe(idx, label):
     return fig
 ```
 
+```console
+Every explanation starts from the population base rate of 53%.
+```
+
 ```python
 fig = describe(idx_high, "Highest-risk patient")
 plt.show()
+```
+
+```console
+[Highest-risk patient] predicted risk = 100%  (base rate 53%)
+    Blocked vessels    = 3                  raises risk by 16.6 points
+    Chest pain type    = asymptomatic       raises risk by  7.4 points
+    Exercise angina    = yes                raises risk by  6.0 points
+    Thallium scan      = reversible defect  raises risk by  4.7 points
+    ST slope           = flat               raises risk by  3.3 points
 ```
 
 ![Highest-risk patient explanation](https://raw.githubusercontent.com/PriorLabs/prior-cookbook/main/visuals/interpret_results/high-risk-patient.png)
@@ -238,11 +255,29 @@ fig = describe(idx_low, "Lowest-risk patient")
 plt.show()
 ```
 
+```console
+[Lowest-risk patient] predicted risk = 1%  (base rate 53%)
+    Chest pain type    = non-anginal        lowers risk by  8.5 points
+    Sex                = female             lowers risk by  8.2 points
+    Blocked vessels    = 0                  lowers risk by  7.4 points
+    Thallium scan      = normal             lowers risk by  6.3 points
+    ST slope           = upsloping          lowers risk by  5.7 points
+```
+
 ![Lowest-risk patient explanation](https://raw.githubusercontent.com/PriorLabs/prior-cookbook/main/visuals/interpret_results/low-risk-patient.png)
 
 ```python
 fig = describe(idx_borderline, "Borderline patient")
 plt.show()
+```
+
+```console
+[Borderline patient] predicted risk = 53%  (base rate 53%)
+    Blocked vessels    = 0                  lowers risk by 14.4 points
+    Max heart rate     = 71                 raises risk by 12.5 points
+    ST slope           = flat               raises risk by  7.7 points
+    Chest pain type    = asymptomatic       raises risk by  7.7 points
+    Thallium scan      = normal             lowers risk by  6.4 points
 ```
 
 ![Borderline patient explanation](https://raw.githubusercontent.com/PriorLabs/prior-cookbook/main/visuals/interpret_results/borderline-patient.png)
