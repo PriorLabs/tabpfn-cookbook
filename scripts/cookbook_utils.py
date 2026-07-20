@@ -471,12 +471,13 @@ def is_command_cell(source: str) -> bool:
 
 
 def _output_stream_text(output: dict) -> str:
-    text = output.get("text", "")
+    text = output.get("text") or ""
     return "".join(text) if isinstance(text, list) else str(text)
 
 
 def _output_plain_text(output: dict) -> str | None:
-    plain = output.get("data", {}).get(_OUTPUT_PLAIN_MIME)
+    data = output.get("data") or {}
+    plain = data.get(_OUTPUT_PLAIN_MIME)
     if plain is None:
         return None
     return "".join(plain) if isinstance(plain, list) else str(plain)
@@ -487,8 +488,10 @@ def clean_output_text(text: str) -> str:
 
     lines: list[str] = []
     for raw_line in text.split("\n"):
-        # Progress bars overwrite via \r; keep only the final rendered segment.
-        segment = raw_line.split("\r")[-1]
+        # Progress bars overwrite via \r; keep the last non-empty segment.
+        # Trailing \r alone would make split("\r")[-1] == "", so strip first.
+        segments = raw_line.rstrip("\r").split("\r")
+        segment = next((part for part in reversed(segments) if part != ""), "")
         if OUTPUT_NOISE_LINE_RE.match(segment):
             continue
         lines.append(segment.rstrip())
@@ -515,7 +518,7 @@ def extract_cell_output(cell: dict) -> str | None:
         return None
 
     chunks: list[str] = []
-    for output in cell.get("outputs", []):
+    for output in cell.get("outputs") or []:
         otype = output.get("output_type")
         if otype == "stream":
             if output.get("name") == "stderr":

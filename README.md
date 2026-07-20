@@ -190,11 +190,13 @@ After validation passes, **on every PR commit** (`synchronize`):
 **Fork PRs are skipped** for preview (validate still runs). A maintainer-only manual dispatch will come later.
 
 ### Job 3 — `publish-docs` (merge to `main` only)
-After cookbooks land on `main`:
+After a push to `main` that **changes `markdowns/`**:
 
-1. Copies **`main`’s** `markdowns/` onto a bot branch (`bot/cookbook-sync`) on `docs`.
-2. Opens or updates a PR into `DOCS_PREVIEW_BRANCH` (`cookbooks-poc` for now; set the variable to `main` at go-live).
-3. Skips the PR when cookbooks are already in sync with the target branch.
+1. Copies **`main`’s** `markdowns/` onto `cookbook/update-<merged-pr-number>` on `docs`.
+2. Opens or updates a PR into `DOCS_PREVIEW_BRANCH` (`tuana/cookbooks-poc` for now; set the variable to `main` at go-live).
+3. If the result already matches the docs base (e.g. a revert), closes any stale open sync PR instead of leaving an outdated diff.
+
+Pushes that only touch scripts/CI/etc. do **not** open a docs PR.
 
 ### Job 4 — `cleanup-docs-preview` (same-repo PR closed)
 Deletes the temporary `cookbook/pr-*` branch on `docs`.
