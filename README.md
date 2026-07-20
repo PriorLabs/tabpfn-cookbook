@@ -6,7 +6,7 @@ Source notebooks for TabPFN Cookbooks. Published on [docs.priorlabs.ai](https://
 
 ### 1. Fork and branch
 
-1. Fork [PriorLabs/prior-cookbook](https://github.com/PriorLabs/prior-cookbook).
+1. Fork [PriorLabs/tabpfn-cookbook](https://github.com/PriorLabs/tabpfn-cookbook).
 2. Create a branch from `main`, e.g. `git checkout -b my-recipe`.
 
 Install local tooling once:
@@ -144,7 +144,7 @@ authors:
   - name: Alex Rivera
     github: https://github.com/priorlabs
     linkedin: https://www.linkedin.com/company/prior-labs
-colab_url: "https://colab.research.google.com/github/PriorLabs/prior-cookbook/blob/main/notebooks/my-recipe.ipynb"
+colab_url: "https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/my-recipe.ipynb"
 ---
 ```
 
@@ -186,7 +186,7 @@ Deletes the temporary `cookbook/pr-*` branch on `docs`.
 
 ### Repository secrets and variables
 
-Configure in **Settings → Secrets and variables → Actions** on this repository (`PriorLabs/prior-cookbook`):
+Configure in **Settings → Secrets and variables → Actions** on this repository (`PriorLabs/tabpfn-cookbook`):
 
 | Name | Type | Purpose |
 |------|------|---------|

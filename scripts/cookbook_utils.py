@@ -21,7 +21,7 @@ ALLOWED_FRONTMATTER_KEYS = frozenset(
     }
 )
 AUTHOR_SOCIAL_KEYS = frozenset({"github", "linkedin", "twitter", "x"})
-COOKBOOKS_REPO = "PriorLabs/prior-cookbook"
+COOKBOOKS_REPO = "PriorLabs/tabpfn-cookbook"
 COOKBOOKS_RAW_BRANCH = "main"
 COOKBOOKS_RAW_BASE_URL = (
     f"https://raw.githubusercontent.com/{COOKBOOKS_REPO}/{COOKBOOKS_RAW_BRANCH}"

@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
         "--markdowns-dir",
         type=Path,
         required=True,
-        help="Directory of .mdx cookbook files to copy (usually prior-cookbook/markdowns).",
+        help="Directory of .mdx cookbook files to copy (usually tabpfn-cookbook/markdowns).",
     )
     parser.add_argument("--cookbooks-repo", required=True, help="owner/repo of the cookbook source.")
     parser.add_argument("--cookbooks-ref", required=True, help="Branch/ref the markdowns came from.")
@@ -127,9 +127,9 @@ def commit_message(
     open_pr: bool = False,
 ) -> str:
     if open_pr and pr_number is not None:
-        return f"Sync cookbooks from prior-cookbook#{pr_number} ({repo}@{ref})"
+        return f"Sync cookbooks from tabpfn-cookbook#{pr_number} ({repo}@{ref})"
     if pr_number is not None:
-        return f"Cookbook preview for prior-cookbook#{pr_number} ({repo}@{ref})"
+        return f"Cookbook preview for tabpfn-cookbook#{pr_number} ({repo}@{ref})"
     return f"Refresh cookbooks from {repo}@{ref}"
 
 
@@ -300,12 +300,12 @@ def main() -> int:
     if args.open_pr:
         if args.pr_number is not None:
             title = (
-                f"Sync cookbooks from prior-cookbook#{args.pr_number} "
+                f"Sync cookbooks from tabpfn-cookbook#{args.pr_number} "
                 f"({args.cookbooks_repo}@{args.cookbooks_ref})"
             )
             body = (
                 f"Automated cookbook sync from `{args.cookbooks_repo}@{args.cookbooks_ref}` "
-                f"(prior-cookbook#{args.pr_number}).\n\n"
+                f"(tabpfn-cookbook#{args.pr_number}).\n\n"
                 f"Merging this PR publishes the latest cookbooks to `{args.base_branch}` "
                 f"on `{DOCS_REPO}`."
             )
