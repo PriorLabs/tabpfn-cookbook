@@ -49,7 +49,11 @@ jobs:
     name: Publish Mintlify preview branch
     runs-on: ubuntu-latest
     needs: validate
-    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    # Same-repo PRs only — fork PRs skip preview (manual dispatch comes later).
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read
       pull-requests: write
@@ -88,7 +92,8 @@ jobs:
             --markdowns-dir markdowns \
             --cookbooks-repo "${{ github.event.pull_request.head.repo.full_name }}" \
             --cookbooks-ref "${{ github.event.pull_request.head.ref }}" \
-            --pr-number "${{ github.event.pull_request.number }}"
+            --pr-number "${{ github.event.pull_request.number }}" \
+            --force-push
 
       - name: Trigger Mintlify preview deployment
         id: mintlify_preview
@@ -126,8 +131,8 @@ jobs:
             "This preview redeploys automatically when you push to this PR (\`${PREVIEW_BRANCH}\` on \`PriorLabs/docs\`).")"
           gh pr comment "$PR_NUMBER" --body "$body"
 
-  refresh-docs-preview:
-    name: Refresh staging preview after merge
+  publish-docs:
+    name: Open docs PR to publish cookbooks
     runs-on: ubuntu-latest
     needs: validate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -142,7 +147,7 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Clone docs staging branch
+      - name: Clone docs target branch
         env:
           DOCS_REPO_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
           DOCS_PREVIEW_BRANCH: ${{ vars.DOCS_PREVIEW_BRANCH }}
@@ -155,35 +160,30 @@ jobs:
             "https://x-access-token:${DOCS_REPO_TOKEN}@github.com/PriorLabs/docs.git" \
             /tmp/docs
 
-      - name: Materialize main cookbooks onto docs staging branch
+      # Materialize cookbooks onto bot/cookbook-sync and open/reuse a PR into
+      # DOCS_PREVIEW_BRANCH (cookbooks-poc for now; set to main at go-live).
+      # Skips the PR when markdowns are already in sync with the target.
+      - name: Open docs PR with main cookbooks
         env:
           DOCS_REPO_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
         run: |
           python3 scripts/publish_docs_preview.py \
             --docs-dir /tmp/docs \
             --base-branch "${{ vars.DOCS_PREVIEW_BRANCH }}" \
-            --preview-branch "${{ vars.DOCS_PREVIEW_BRANCH }}" \
+            --preview-branch bot/cookbook-sync \
             --markdowns-dir markdowns \
             --cookbooks-repo "${{ github.repository }}" \
-            --cookbooks-ref main
-
-      - name: Trigger Mintlify preview on staging docs branch
-        env:
-          MINTLIFY_API_KEY: ${{ secrets.MINTLIFY_API_KEY }}
-          MINTLIFY_PROJECT_ID: ${{ secrets.MINTLIFY_PROJECT_ID }}
-          DOCS_PREVIEW_BRANCH: ${{ vars.DOCS_PREVIEW_BRANCH }}
-        run: |
-          curl --fail-with-body -sS -X POST \
-            "https://api.mintlify.com/v1/project/preview/${MINTLIFY_PROJECT_ID}" \
-            -H "Authorization: Bearer ${MINTLIFY_API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d "{\"branch\":\"${DOCS_PREVIEW_BRANCH}\"}"
-          echo "Redeployed staging preview branch ${DOCS_PREVIEW_BRANCH} with cookbooks from main."
+            --cookbooks-ref main \
+            --open-pr
 
   cleanup-docs-preview:
     name: Delete cookbook PR preview branch
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Delete docs preview branch
         env:

@@ -4,7 +4,7 @@ Source notebooks for Prior Labs documentation recipes. Notebooks are converted t
 
 ## Contributing
 
-We welcome recipe contributions from the community. Published recipes appear on [docs.priorlabs.ai](https://docs.priorlabs.ai) under the Cookbook tab.
+We welcome cookbook contributions from the community. Published recipes appear on [docs.priorlabs.ai](https://docs.priorlabs.ai) under the Cookbook tab.
 
 Every recipe needs **YAML frontmatter** so it can be published on the docs site. Add it in:
 
@@ -178,28 +178,28 @@ Pull requests and pushes to `main` run `.github/workflows/docs-sync.yml`:
 ### Job 1 — `validate`
 Runs on every cookbook PR update and every push to `main`. Checks notebooks, markdown, and author blocks.
 
-### Job 2 — `publish-docs-preview` (PRs only)
+### Job 2 — `publish-docs-preview` (same-repo PRs only)
 After validation passes, **on every PR commit** (`synchronize`):
 
 1. Clones your staging docs branch (`DOCS_PREVIEW_BRANCH`).
 2. Creates/updates `cookbook/pr-<N>` on `docs`.
 3. **Copies this PR’s `markdowns/*.mdx` into `docs/cookbook/`**, runs `npm run sync`, and commits the result.
 4. Triggers a Mintlify preview for `cookbook/pr-<N>`.
-5. On **PR opened** only, posts a comment with the Mintlify `previewUrl` (same-repo or fork → origin). Later pushes update the same preview branch without re-commenting.
+5. On **PR opened** only, posts a comment with the Mintlify `previewUrl`. Later pushes update the same preview branch without re-commenting.
 
-Mintlify only serves files on the docs branch — it cannot fetch private cookbook repos — so CI materializes the markdown into the preview branch. Fork PRs work because Actions checks out the PR head.
+**Fork PRs are skipped** for preview (validate still runs). A maintainer-only manual dispatch will come later.
 
-### Job 3 — `refresh-docs-preview` (merge to `main` only)
+### Job 3 — `publish-docs` (merge to `main` only)
 After cookbooks land on `main`:
 
-1. Copies **`main`’s** `markdowns/` onto `DOCS_PREVIEW_BRANCH`.
-2. Runs sync and pushes.
-3. Triggers a Mintlify preview for that staging docs branch.
+1. Copies **`main`’s** `markdowns/` onto a bot branch (`bot/cookbook-sync`) on `docs`.
+2. Opens or updates a PR into `DOCS_PREVIEW_BRANCH` (`cookbooks-poc` for now; set the variable to `main` at go-live).
+3. Skips the PR when cookbooks are already in sync with the target branch.
 
-### Job 4 — `cleanup-docs-preview` (PR closed)
+### Job 4 — `cleanup-docs-preview` (same-repo PR closed)
 Deletes the temporary `cookbook/pr-*` branch on `docs`.
 
-**Job 2 vs job 3:** Job 2 = temporary preview of *this PR’s* cookbooks. Job 3 = refresh long-lived staging with cookbooks from *main*.
+**Job 2 vs job 3:** Job 2 = temporary Mintlify preview of *this PR’s* cookbooks. Job 3 = open a docs PR to publish cookbooks from *main*.
 
 ### Repository secrets and variables
 
@@ -207,10 +207,10 @@ Configure in **Settings → Secrets and variables → Actions** on `prior-cookbo
 
 | Name | Type | Purpose |
 |------|------|---------|
-| `DOCS_REPO_TOKEN` | **Secret** | Push preview/staging branches to `PriorLabs/docs` |
+| `DOCS_REPO_TOKEN` | **Secret** | Push preview/sync branches and open PRs on `PriorLabs/docs` |
 | `MINTLIFY_API_KEY` | **Secret** | Mintlify admin API key (`mint_…`) |
 | `MINTLIFY_PROJECT_ID` | **Secret** | Mintlify project ID |
-| `DOCS_PREVIEW_BRANCH` | **Variable** | Staging docs branch (base for PR previews + target after merge) |
+| `DOCS_PREVIEW_BRANCH` | **Variable** | Docs branch for PR previews + target of post-merge sync PRs (`cookbooks-poc` now; `main` at go-live) |
 
 Validation rules:
 
