@@ -44,12 +44,18 @@ COLAB_BLOCK = MdxBlockMarkers(
     "{/* cookbook-colab:start process_markdown.py */}",
     "{/* cookbook-colab:end process_markdown.py */}",
 )
+META_BLOCK = MdxBlockMarkers(
+    "{/* cookbook-meta:start process_markdown.py */}",
+    "{/* cookbook-meta:end process_markdown.py */}",
+)
 
 # Back-compat aliases used in older docs / comments
 AUTHOR_BLOCK_START = AUTHOR_BLOCK.start
 AUTHOR_BLOCK_END = AUTHOR_BLOCK.end
 COLAB_BLOCK_START = COLAB_BLOCK.start
 COLAB_BLOCK_END = COLAB_BLOCK.end
+META_BLOCK_START = META_BLOCK.start
+META_BLOCK_END = META_BLOCK.end
 
 
 def discover_slug_paths(
@@ -323,16 +329,42 @@ def inject_colab_block(body: str, colab_url: str | None) -> str:
     return inject_mdx_block(body, COLAB_BLOCK, render_colab_block(str(colab_url).strip()))
 
 
+def render_meta_block(
+    authors: list[dict[str, str]] | None,
+    colab_url: str | None,
+) -> str | None:
+    """Authors (left) and Colab (right) on one horizontal row."""
+    parts: list[str] = []
+    if authors:
+        parts.append(render_authors_block(authors))
+    if colab_url and str(colab_url).strip():
+        parts.append(render_colab_block(str(colab_url).strip()))
+    if not parts:
+        return None
+    return wrap_mdx_block(
+        META_BLOCK,
+        '<div className="cookbook-meta">',
+        *parts,
+        "</div>",
+    )
+
+
 def process_markdown_content(content: str) -> str:
     frontmatter_block, body, _ = split_mdx_document(content)
     frontmatter = parse_frontmatter_text(content)
     authors = frontmatter.get("authors")
     colab_url = frontmatter.get("colab_url")
 
-    new_body = inject_author_block(body, authors if isinstance(authors, list) else None)
-    new_body = inject_colab_block(
-        new_body, str(colab_url) if isinstance(colab_url, str) else None
+    # Meta wraps both; also strip legacy standalone author/colab blocks.
+    body = strip_mdx_block(body, META_BLOCK)
+    body = strip_mdx_block(body, AUTHOR_BLOCK)
+    body = strip_mdx_block(body, COLAB_BLOCK)
+
+    meta = render_meta_block(
+        authors if isinstance(authors, list) else None,
+        str(colab_url) if isinstance(colab_url, str) else None,
     )
+    new_body = inject_mdx_block(body, META_BLOCK, meta)
 
     if new_body:
         return f"{frontmatter_block}\n{new_body}"
