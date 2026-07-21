@@ -47,7 +47,7 @@ A strong classifier is only useful in practice if you can explain what it is doi
 ```python
 import os
 
-# from google.colab import userdata
+from google.colab import userdata
 
 import warnings
 from pathlib import Path
@@ -162,7 +162,7 @@ fig.suptitle(
 plt.show()
 ```
 
-![SHAP beeswarm plot](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/interpret_results/shap-beeswarm.png)
+![Global Feature Importance](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/interpret_results/plot-01.png)
 
 ## Partial Dependence
 
@@ -198,7 +198,7 @@ plt.show()
 Partial dependence for: ['Blocked vessels', 'Max heart rate', 'ST depression', 'Cholesterol']
 ```
 
-![Partial dependence plots](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/interpret_results/partial-dependence.png)
+![Partial Dependence](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/interpret_results/plot-02.png)
 
 ## Explaining Individual Predictions
 
@@ -264,7 +264,7 @@ plt.show()
     Exercise angina    = yes                raises risk by  4.7 points
 ```
 
-![Highest-risk patient explanation](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/interpret_results/high-risk-patient.png)
+![Explaining Individual Predictions](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/interpret_results/plot-03.png)
 
 ```python
 fig = describe(idx_low, "Lowest-risk patient")
@@ -280,7 +280,7 @@ plt.show()
     Exercise angina    = no                 lowers risk by  4.3 points
 ```
 
-![Lowest-risk patient explanation](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/interpret_results/low-risk-patient.png)
+![Explaining Individual Predictions](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/interpret_results/plot-04.png)
 
 ```python
 fig = describe(idx_borderline, "Borderline patient")
@@ -296,4 +296,4 @@ plt.show()
     Sex                = male               raises risk by  5.5 points
 ```
 
-![Borderline patient explanation](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/interpret_results/borderline-patient.png)
+![Explaining Individual Predictions](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/interpret_results/plot-05.png)
