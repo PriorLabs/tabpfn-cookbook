@@ -1,109 +1,90 @@
 # TabPFN Cookbook
 
-Source notebooks for TabPFN Cookbooks. Published on [docs.priorlabs.ai](https://docs.priorlabs.ai) (Cookbook tab). Converted to Mintlify MDX and shipped via [PriorLabs/docs](https://github.com/PriorLabs/docs).
+Source notebooks for [TabPFN](https://priorlabs.ai) cookbooks. Published on [docs.priorlabs.ai](https://docs.priorlabs.ai) (Cookbook tab).
+## Contribute
 
-## How to contribute
+### Setup
 
-### 1. Fork and branch
-
-1. Fork [PriorLabs/tabpfn-cookbook](https://github.com/PriorLabs/tabpfn-cookbook).
-2. Create a branch from `main`, e.g. `git checkout -b my-recipe`.
-
-Install local tooling once:
+1. Fork [PriorLabs/tabpfn-cookbook](https://github.com/PriorLabs/tabpfn-cookbook) and branch from `main`.
+2. Install once:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Choose how you’ll author the recipe
+### Pick a path
 
-| Path | Use when | Source of truth |
-|------|----------|-----------------|
-| **Notebook** (recommended) | Code-heavy walkthroughs | `notebooks/<slug>.ipynb` → generates `markdowns/<slug>.mdx` |
-| **Markdown only** | Prose-heavy / hand-authored pages | `markdowns/<slug>.mdx` only |
+| Path | When | Source of truth |
+|------|------|-----------------|
+| **Notebook** (recommended) | Code walkthroughs | `notebooks/<slug>.ipynb` → generates `markdowns/<slug>.mdx` |
+| **Markdown only** | Prose / no runnable notebook | `markdowns/<slug>.mdx` only |
 
-Pick a short `slug` (filename without extension), e.g. `my-recipe`.
+Use a short `slug` (filename without extension), e.g. `my-recipe`.
 
-### 3a. Contribute a notebook
+### Notebook recipe
 
-1. **Create or edit** `notebooks/<slug>.ipynb`.
-2. **Add YAML frontmatter** in the **first markdown cell** (see [Frontmatter](#frontmatter)). At minimum: `title` and `description`.
-3. **Write and run** the notebook so useful cell outputs are present (prints, tables). Install/`!pip` noise is stripped on conversion; keep meaningful stdout.
-4. **Plots (optional):** if the notebook has chart images you want on the docs site, extract them into `visuals/`:
-   - Add an entry for your slug in `scripts/extract_notebook_visuals.py` (`NOTEBOOK_IMAGE_NAMES`: cell index → filename + alt text).
-   - Then run:
-     ```bash
-     python3 scripts/extract_notebook_visuals.py --slug <slug>
-     ```
-   - That writes PNGs under `visuals/<slug>/` and inserts markdown image cells in the notebook. If you’re unsure, open a PR without plots and ask a maintainer to help wire visuals.
-5. **Convert** the notebook to Mintlify MDX (also injects author block + Colab button when applicable):
-   ```bash
-   python3 scripts/convert_to_markdown.py --slug <slug>
-   ```
-6. **Validate**:
-   ```bash
-   python3 scripts/validate.py --all
-   ```
-7. **Commit** the notebook, generated markdown, and any new visuals:
-   ```bash
-   git add notebooks/<slug>.ipynb markdowns/<slug>.mdx visuals/<slug>/
-   git commit -m "Add <slug> cookbook"
-   ```
+1. Create `notebooks/<slug>.ipynb` with [frontmatter](#frontmatter) in the **first markdown cell** (`title` + `description` required).
+2. Write and **run** the notebook so useful outputs (prints, tables, plots) are saved in the `.ipynb`.
+3. Convert (builds MDX, injects authors/Colab, extracts plots into `visuals/<slug>/` only if needed):
 
-Do **not** hand-edit `markdowns/<slug>.mdx` for notebook recipes — re-run `convert_to_markdown.py` after notebook changes.
+```bash
+python3 scripts/convert_to_markdown.py --slug <slug>
+```
 
-### 3b. Contribute markdown only (no notebook)
+4. Validate and commit:
 
-1. **Create** `markdowns/<slug>.mdx` with [frontmatter](#frontmatter) at the top.
-2. If you set `authors` and/or `colab_url`, inject the Mintlify blocks:
-   ```bash
-   python3 scripts/process_markdown.py --slug <slug>
-   ```
-3. **Validate**:
-   ```bash
-   python3 scripts/validate.py --all
-   ```
-4. **Commit** `markdowns/<slug>.mdx` (do **not** run `convert_to_markdown.py` for these).
+```bash
+python3 scripts/validate.py --all
+git add notebooks/<slug>.ipynb markdowns/<slug>.mdx visuals/<slug>/
+git commit -m "Add <slug> cookbook"
+```
 
-### 4. Open a pull request
 
-1. Push your branch and open a PR against `main`.
-2. In the PR description, say what the recipe teaches and who it’s for.
-3. CI runs the same checks as `validate.py`. Fix any failures locally and push again.
+**Plots:** embedded chart outputs are extracted automatically on convert. You can also add files under `visuals/<slug>/` and reference them from a markdown cell:
 
-A maintainer will review. Same-repo PRs get a Mintlify docs preview comment when opened; fork PRs still get validation.
+```markdown
+![My chart](../visuals/<slug>/my-chart.png)
+```
 
-### Script cheat sheet
+### Markdown-only recipe
 
-| Script | When to run |
-|--------|-------------|
-| `python3 scripts/convert_to_markdown.py --slug <slug>` | After editing a **notebook** (or `--all`) |
-| `python3 scripts/process_markdown.py --slug <slug>` | After editing `authors` / `colab_url` on a **markdown-only** recipe |
-| `python3 scripts/extract_notebook_visuals.py --slug <slug>` | To pull plot images out of a notebook into `visuals/` |
+1. Create `markdowns/<slug>.mdx` with [frontmatter](#frontmatter).
+2. If you set `authors` and/or `colab_url`:
+
+```bash
+python3 scripts/process_markdown.py --slug <slug>
+```
+
+3. Validate and commit `markdowns/<slug>.mdx` (do **not** run `convert_to_markdown.py`).
+
+### Open a PR
+
+Push your branch and open a PR against `main`. CI runs the same checks as `validate.py`.
+
+Same-repo PRs get a Mintlify docs preview comment when opened; fork PRs still get validation.
+
+### Commands you’ll use
+
+| Command | When |
+|---------|------|
+| `python3 scripts/convert_to_markdown.py --slug <slug>` | After editing a notebook (or `--all`) |
+| `python3 scripts/process_markdown.py --slug <slug>` | After editing `authors` / `colab_url` on a markdown-only recipe |
 | `python3 scripts/validate.py --all` | Before opening or updating a PR |
 
-### What we look for
+### Optional frontmatter extras
 
-- Clear title and description so readers know what they’ll learn
-- Runnable or realistic code examples where applicable
-- Links to related docs pages when helpful
-- Recipes that fit existing tags (`api`, `use-case`, `interpretability`, `integration`, etc.) or a short note in the PR if you’re introducing a new topic
-
-### Optional recipe features
-
-**Authors** — add to frontmatter:
+**Authors**
 
 ```yaml
 authors:
-  - name: Alex Rivera
-    github: https://github.com/priorlabs
+  - name: Prior Labs
     linkedin: https://www.linkedin.com/company/prior-labs
-    twitter: https://twitter.com/priorlabs
+    twitter: https://twitter.com/prior_labs
 ```
 
-Supported social fields: `github`, `linkedin`, `x` (`twitter` is also accepted for X). For notebooks, author blocks are injected by `convert_to_markdown.py`. For markdown-only, run `process_markdown.py` after changing authors.
+Social fields: `github`, `linkedin`, `x` (`twitter` is also accepted). Notebooks get the author block from convert; markdown-only needs `process_markdown.py`.
 
-**Open in Colab** — for notebooks, `colab_url` is set automatically by `convert_to_markdown.py`. Do not set it by hand. Markdown-only recipes may set `colab_url` and then run `process_markdown.py`.
+**Colab** — set automatically for notebooks. For markdown-only, set `colab_url` then run `process_markdown.py`.
 
 **YouTube** — in a notebook markdown cell:
 
@@ -111,26 +92,20 @@ Supported social fields: `github`, `linkedin`, `x` (`twitter` is also accepted f
 [youtube: Optional title](https://youtu.be/VIDEO_ID)
 ```
 
-or a bare YouTube URL on its own line. Conversion turns these into embeds. For markdown-only recipes, paste the `<iframe>` embed yourself.
+or a bare YouTube URL on its own line. Markdown-only recipes: paste an `<iframe>` yourself.
 
 Questions? Open an issue or email [hello@priorlabs.ai](mailto:hello@priorlabs.ai).
 
 ## Layout
 
 ```
-notebooks/     # Author recipes here (.ipynb with YAML frontmatter in cell 0)
-markdowns/     # Generated MDX (or hand-written MDX without a notebook)
-visuals/       # Plot images referenced from notebooks / markdowns
-scripts/
-  convert_to_markdown.py
-  process_markdown.py
-  extract_notebook_visuals.py
-  validate.py
+notebooks/   # Author notebooks (.ipynb, frontmatter in cell 0)
+markdowns/   # Generated or hand-written MDX
+visuals/     # Plot images (created by convert when needed)
+scripts/     # convert_to_markdown, process_markdown, validate, …
 ```
 
 ## Frontmatter
-
-The first markdown cell of each notebook (or the top of each `.mdx` file) must include:
 
 ```markdown
 ---
@@ -141,62 +116,34 @@ cookbookTags:
   - api
 feature_in_doc: classification
 authors:
-  - name: Alex Rivera
-    github: https://github.com/priorlabs
+  - name: Prior Labs
     linkedin: https://www.linkedin.com/company/prior-labs
-colab_url: "https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/my-recipe.ipynb"
+    twitter: https://twitter.com/prior_labs
 ---
 ```
 
 Required: `title`, `description`  
 Optional: `icon`, `cookbookTags`, `feature_in_doc`, `authors`  
-Auto-set for notebooks by `convert_to_markdown.py`: `colab_url`
+Auto-set for notebooks: `colab_url`
 
-## CI
+## CI (maintainers)
 
-Pull requests and pushes to `main` run `.github/workflows/docs-sync.yml`:
+Workflow: `.github/workflows/docs-sync.yml`
 
-### Job 1 — `validate`
-Runs on every cookbook PR update and every push to `main`. Checks notebooks, markdown, and author blocks.
+| Job | When | What |
+|-----|------|------|
+| `validate` | Every PR update + push to `main` | Notebooks / markdown / author blocks |
+| `publish-docs-preview` | Same-repo PRs only | Mintlify preview on `cookbook/pr-<N>` (comment on open) |
+| `publish-docs` | Push to `main` that changes `markdowns/` | Opens docs PR `cookbook/update-<N>` → `DOCS_PREVIEW_BRANCH` |
+| `cleanup-docs-preview` | Same-repo PR closed | Deletes `cookbook/pr-*` |
 
-### Job 2 — `publish-docs-preview` (same-repo PRs only)
-After validation passes, **on every PR commit** (`synchronize`):
+Fork PRs: validate only (no preview).
 
-1. Clones your staging docs branch (`DOCS_PREVIEW_BRANCH`).
-2. Creates/updates `cookbook/pr-<N>` on `docs`.
-3. **Copies this PR’s `markdowns/*.mdx` into `docs/cookbook/`**, runs `npm run sync`, and commits the result.
-4. Triggers a Mintlify preview for `cookbook/pr-<N>`.
-5. On **PR opened** only, posts a comment with the Mintlify `previewUrl`. Later pushes update the same preview branch without re-commenting.
-
-**Fork PRs are skipped** for preview (validate still runs). A maintainer-only manual dispatch will come later.
-
-### Job 3 — `publish-docs` (merge to `main` only)
-After a push to `main` that **changes `markdowns/`**:
-
-1. Copies **`main`’s** `markdowns/` onto `cookbook/update-<merged-pr-number>` on `docs`.
-2. Opens or updates a PR into `DOCS_PREVIEW_BRANCH` (`tuana/cookbooks-poc` for now; set the variable to `main` at go-live).
-3. If the result already matches the docs base (e.g. a revert), closes any stale open sync PR instead of leaving an outdated diff.
-
-Pushes that only touch scripts/CI/etc. do **not** open a docs PR.
-
-### Job 4 — `cleanup-docs-preview` (same-repo PR closed)
-Deletes the temporary `cookbook/pr-*` branch on `docs`.
-
-**Job 2 vs job 3:** Job 2 = temporary Mintlify preview of *this PR’s* cookbooks. Job 3 = open a docs PR to publish cookbooks from *main*.
-
-### Repository secrets and variables
-
-Configure in **Settings → Secrets and variables → Actions** on this repository (`PriorLabs/tabpfn-cookbook`):
+**Secrets / variables** on `PriorLabs/tabpfn-cookbook`:
 
 | Name | Type | Purpose |
 |------|------|---------|
-| `DOCS_REPO_TOKEN` | **Secret** | Push preview/sync branches and open PRs on `PriorLabs/docs` |
-| `MINTLIFY_API_KEY` | **Secret** | Mintlify admin API key (`mint_…`) |
-| `MINTLIFY_PROJECT_ID` | **Secret** | Mintlify project ID |
-| `DOCS_PREVIEW_BRANCH` | **Variable** | Docs branch for PR previews + target of post-merge sync PRs (`tuana/cookbooks-poc` now; `main` at go-live) |
-
-Validation rules:
-
-- **Notebook changed** → fails if `markdowns/` is not up to date (run `convert_to_markdown.py`, which includes author blocks)
-- **Authors in frontmatter** → fails if the rendered author block is missing or out of date
-- **Markdown only changed** → validates frontmatter and injected author/Colab blocks (run `process_markdown.py` when `authors` or `colab_url` is set)
+| `DOCS_REPO_TOKEN` | Secret | Contents + Pull requests write on `PriorLabs/docs` |
+| `MINTLIFY_API_KEY` | Secret | Mintlify admin API key |
+| `MINTLIFY_PROJECT_ID` | Secret | Mintlify project ID |
+| `DOCS_PREVIEW_BRANCH` | Variable | Preview base + sync PR target (`tuana/cookbooks-poc` now; `main` at go-live) |
