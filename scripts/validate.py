@@ -117,7 +117,7 @@ def check_notebooks_converted() -> bool:
 
     print(
         "Generated markdown is out of date.\n"
-        "Run: python3 scripts/convert_to_markdown.py --all\n"
+        "Run: uv run python scripts/convert_to_markdown.py --all\n"
         "Then commit the updated files under markdowns/.",
         file=sys.stderr,
     )

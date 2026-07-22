@@ -191,8 +191,8 @@ def inject_mdx_block(body: str, markers: MdxBlockMarkers, block: str | None) -> 
 
 def remediation_command(*, slug: str, has_notebook: bool) -> str:
     if has_notebook:
-        return f"python3 scripts/convert_to_markdown.py --slug {slug}"
-    return f"python3 scripts/process_markdown.py --slug {slug}"
+        return f"uv run python scripts/convert_to_markdown.py --slug {slug}"
+    return f"uv run python scripts/process_markdown.py --slug {slug}"
 
 
 def injected_block_errors(
