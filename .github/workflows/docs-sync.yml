@@ -8,7 +8,8 @@ on:
       - "markdowns/**"
       - "visuals/**"
       - "scripts/**"
-      - "requirements.txt"
+      - "pyproject.toml"
+      - "uv.lock"
       - ".github/workflows/docs-sync.yml"
   push:
     branches:
@@ -18,7 +19,8 @@ on:
       - "markdowns/**"
       - "visuals/**"
       - "scripts/**"
-      - "requirements.txt"
+      - "pyproject.toml"
+      - "uv.lock"
       - ".github/workflows/docs-sync.yml"
 
 jobs:
@@ -30,20 +32,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.11"
 
       - name: Install validation dependencies
-        run: pip install -r requirements.txt
+        run: uv sync
 
       - name: Validate changed cookbooks
         if: github.event_name == 'pull_request'
-        run: python3 scripts/validate.py --base ${{ github.event.pull_request.base.sha }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: uv run python scripts/validate.py --base "$BASE_SHA"
 
       - name: Validate all cookbooks
         if: github.event_name == 'push'
-        run: python3 scripts/validate.py --all
+        run: uv run python scripts/validate.py --all
 
   publish-docs-preview:
     name: Publish Mintlify preview branch
@@ -60,7 +64,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.11"
 
@@ -85,7 +89,7 @@ jobs:
         env:
           DOCS_REPO_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
         run: |
-          python3 scripts/publish_docs_preview.py \
+          uv run python scripts/publish_docs_preview.py \
             --docs-dir /tmp/docs \
             --base-branch "${{ vars.DOCS_PREVIEW_BRANCH }}" \
             --preview-branch "cookbook/pr-${{ github.event.pull_request.number }}" \
@@ -108,7 +112,7 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{\"branch\":\"${PREVIEW_BRANCH}\"}")"
           echo "$response"
-          preview_url="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("previewUrl") or "")' <<<"$response")"
+          preview_url="$(uv run python -c 'import json,sys; print(json.load(sys.stdin).get("previewUrl") or "")' <<<"$response")"
           if [ -z "$preview_url" ]; then
             echo "Mintlify response did not include previewUrl." >&2
             exit 1
@@ -164,7 +168,7 @@ jobs:
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5
         if: steps.markdowns.outputs.changed == 'true'
         with:
           python-version: "3.11"
@@ -230,7 +234,7 @@ jobs:
           DOCS_REPO_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
           GH_TOKEN: ${{ secrets.DOCS_REPO_TOKEN }}
         run: |
-          python3 scripts/publish_docs_preview.py \
+          uv run python scripts/publish_docs_preview.py \
             --docs-dir /tmp/docs \
             --base-branch "${{ vars.DOCS_PREVIEW_BRANCH }}" \
             --preview-branch "cookbook/update-${{ steps.merged_pr.outputs.number }}" \

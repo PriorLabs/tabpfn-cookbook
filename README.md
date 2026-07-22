@@ -6,11 +6,13 @@ Source notebooks for [TabPFN](https://priorlabs.ai) cookbooks. Published on [doc
 ### Setup
 
 1. Fork [PriorLabs/tabpfn-cookbook](https://github.com/PriorLabs/tabpfn-cookbook) and branch from `main`.
-2. Install once:
+2. Install [uv](https://docs.astral.sh/uv/) and sync the environment once:
 
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
+
+Prefix the commands below with `uv run` (e.g. `uv run python scripts/validate.py --all`) to run them in that environment.
 
 ### Pick a path
 
@@ -28,13 +30,13 @@ Use a short `slug` (filename without extension), e.g. `my-recipe`.
 3. Convert (builds MDX, injects authors/Colab, extracts plots into `visuals/<slug>/` only if needed):
 
 ```bash
-python3 scripts/convert_to_markdown.py --slug <slug>
+uv run python scripts/convert_to_markdown.py --slug <slug>
 ```
 
 4. Validate and commit:
 
 ```bash
-python3 scripts/validate.py --all
+uv run python scripts/validate.py --all
 git add notebooks/<slug>.ipynb markdowns/<slug>.mdx visuals/<slug>/
 git commit -m "Add <slug> cookbook"
 ```
@@ -52,7 +54,7 @@ git commit -m "Add <slug> cookbook"
 2. If you set `authors` and/or `colab_url`:
 
 ```bash
-python3 scripts/process_markdown.py --slug <slug>
+uv run python scripts/process_markdown.py --slug <slug>
 ```
 
 3. Validate and commit `markdowns/<slug>.mdx` (do **not** run `convert_to_markdown.py`).
@@ -67,9 +69,9 @@ Same-repo PRs get a Mintlify docs preview comment when opened; fork PRs still ge
 
 | Command | When |
 |---------|------|
-| `python3 scripts/convert_to_markdown.py --slug <slug>` | After editing a notebook (or `--all`) |
-| `python3 scripts/process_markdown.py --slug <slug>` | After editing `authors` / `colab_url` on a markdown-only recipe |
-| `python3 scripts/validate.py --all` | Before opening or updating a PR |
+| `uv run python scripts/convert_to_markdown.py --slug <slug>` | After editing a notebook (or `--all`) |
+| `uv run python scripts/process_markdown.py --slug <slug>` | After editing `authors` / `colab_url` on a markdown-only recipe |
+| `uv run python scripts/validate.py --all` | Before opening or updating a PR |
 
 ### Optional frontmatter extras
 
