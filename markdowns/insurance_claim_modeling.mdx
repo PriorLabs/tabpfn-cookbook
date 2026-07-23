@@ -1,7 +1,7 @@
 ---
 title: 'Insurance Claim Modeling: TabPFN vs. GLM'
-description: Model insurance pure premiums on zero-inflated claims data with TabPFN
-  and compare against the classic actuarial GLM baselines
+description: Predict insurance pure premiums on zero-inflated claims data; TabPFN
+  on the raw dataframe vs. hand-engineered actuarial GLM, with per-policy uncertainty
 icon: car-burst
 cookbookTags:
 - regression
@@ -32,28 +32,41 @@ colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/bl
 {/* cookbook-colab:end process_markdown.py */}
 </div>
 {/* cookbook-meta:end process_markdown.py */}
-*Pricing risk on a heavily zero-inflated target — with zero feature engineering.*
+*Better risk ranking and per-policy uncertainty from the raw dataframe, no feature engineering.*
 
-Insurance claim data is *zero-inflated*: most policies never claim, and the
-few that do produce heavily right-skewed amounts. The classic actuarial recipe is a **two-stage
-GLM**: a frequency model (how often do claims happen?) times a severity model (how large are
-they?). Getting a GLM to work takes real feature engineering — binning, one-hot encoding,
-log-scaling, choosing link functions and a Tweedie power.
+Insurance claim data is *zero-inflated*: most policies never claim, and the few that do produce
+heavily right-skewed amounts. Pricing it well is the core actuarial problem, and the classic recipe
+is a **two-stage generalized linear model (GLM)**: a frequency model (how often do claims happen?)
+times a severity model (how large are they?). Making a GLM work takes real feature engineering, 
+binning, one-hot encoding, log-scaling, and choosing link functions and a Tweedie power by hand.
 
-[TabPFN](https://github.com/PriorLabs/TabPFN) is a tabular foundation model that
-learns in a single forward pass with **no per-dataset training and no preprocessing** — you hand
-it the raw dataframe (mixed numeric + string columns, missing values and all). This notebook puts
-single- and two-stage TabPFN models head-to-head with the matching scikit-learn GLM baselines on the standard French
-Motor Third-Party Liability (freMTPL2) dataset, scored with common insurance metrics:
-**Tweedie deviance / D²** (calibration) and the **exposure-weighted Gini** (ranking / lift).
+[TabPFN](https://github.com/PriorLabs/TabPFN) is a tabular foundation model that learns in a single
+forward pass with **no per-dataset training and no preprocessing**, you hand it the raw dataframe
+(mixed numeric and string columns, missing values and all). This notebook puts TabPFN head-to-head
+with matching scikit-learn GLM baselines on the standard French Motor Third-Party Liability
+(freMTPL2) dataset.
 
-Results: TabPFN **clearly beats the GLMs on risk ranking** (Gini 0.321 vs 0.306) with *zero*
-feature engineering, and after a simple portfolio-level rebalancing — which log-link GLMs perform
-implicitly on their training data — reaches **comparable calibration** (Tweedie deviance within ~1%).
+**Bottom line up front:**
 
-> **Requirements.** A CUDA GPU (H100-class recommended for the full data). The first TabPFN call
-> downloads the model weights. Baselines, dataset explanations and metrics follow scikit-learn's
-> [Tweedie regression on insurance claims](https://scikit-learn.org/stable/auto_examples/linear_model/plot_tweedie_regression_insurance_claims.html) example.
+- **Better risk ranking, zero feature engineering.** Straight from the 9-column raw dataframe, TabPFN
+  reaches an exposure-weighted **Gini of ~0.32 vs ~0.31** for the best hand-built GLM, better
+  separation of safe from risky policies, which is what drives pricing.
+- **Per-policy uncertainty for free.** TabPFN returns a full predictive distribution per policy, so
+  you can read the expected claim *and* the tail ("how bad could this one get?"), the GLM gives you
+  only a fitted mean.
+- **Calibration on par, with one optional line.** With a single portfolio-level rescale — the same balancing a log-link GLM does implicitly —
+  TabPFN matches the GLM on calibration while leaving the ranking untouched.
+
+We score with the metrics actuaries actually use: the **exposure-weighted Gini** (ranking / lift) and
+**Tweedie deviance / D²** (calibration).
+
+> **Requirements.** A CUDA GPU (H100-class recommended for the full dataset). The first TabPFN call
+> downloads the model weights. Baselines, dataset explanation and metrics follow scikit-learn's
+> [Tweedie regression on insurance claims](https://scikit-learn.org/stable/auto_examples/linear_model/plot_tweedie_regression_insurance_claims.html) example which motivated this tutorial.
+
+```python
+#!pip install tabpfn_client matplotlib scikit-learn
+```
 
 ```python
 import warnings
@@ -72,7 +85,6 @@ from sklearn.preprocessing import (
 from sklearn.linear_model import PoissonRegressor, GammaRegressor, TweedieRegressor
 from sklearn.metrics import mean_tweedie_deviance, d2_tweedie_score, auc
 
-from tabpfn import TabPFNClassifier, TabPFNRegressor
 
 # Benign numeric overflow in TabPFN's inverse target transform (expm1 on the far
 # tail of the output distribution's support); results are unaffected.
@@ -84,28 +96,41 @@ FEATURES = ["VehAge", "DrivAge", "VehBrand", "VehPower", "VehGas",
             "Region", "Area", "BonusMalus", "Density"]
 ```
 
+In this notebook, we use the TabPFN CLient accessing the API; no hardware required when running the model.
+
+```python
+from tabpfn_client import TabPFNClassifier, TabPFNRegressor, get_access_token
+token = get_access_token()
+
+# uncomment for local version
+# from tabpfn import TabPFNClassifier, TabPFNRegressor
+```
+
 ## The data
 
-In this dataset, each sample corresponds to an insurance policy, i.e., a contract within an insurance company and an individual (policyholder). Available features include driver age, vehicle age, vehicle power, etc. A claim is the request made by a policyholder to the insurer to compensate for a loss covered by the insurance. The claim amount is the amount of money that the insurer must pay. The exposure is the duration of the insurance coverage of a given policy, in years.
+Each row is an insurance **policy** — a contract between the insurer and a policyholder — described
+by driver age, vehicle age, vehicle power, region, and so on. A **claim** is a request for
+compensation; the **claim amount** is what the insurer pays out. **Exposure** is how long the policy
+was actually observed, measured in years: a policy on the books for the full period has
+`Exposure = 1.0`, one observed for six months has `Exposure ≈ 0.5`. It matters because a policy
+watched for two months has had far less opportunity to claim than one watched all year, so every
+rate below is expressed *per unit of exposure*.
 
-Here our goal is to predict the expected value, i.e., the mean, of the total claim amount per exposure unit also referred to as the pure premium.
+Our target is the **pure premium**: the expected claim cost per unit of exposure, i.e., the
+break-even price of the risk. There are two classic ways to model it:
 
-There are usually two common ways of modeling this:
+- **Single-stage:** model the total claim cost per unit exposure directly.
+- **Two-stage:** model the claim *frequency* (claims per year) and the *severity* (average amount per
+  claim) separately, then multiply.
 
-- Model the number of claims, and the average claim amount per claim, also known as severity, and multiply the predictions of both in order to get the total claim amount.
-- Model the total claim amount per exposure directly
-
-`freMTPL2freq` holds one row per policy (risk features, claim count `ClaimNb`, and `Exposure` =
-fraction of a year observed). `freMTPL2sev` holds the individual claim amounts. We aggregate claim
-amounts per policy and join, policies with no claim get `ClaimAmount = 0`.
-
-We apply the same light cleaning as the scikit-learn example (cap extreme values, make `ClaimNb`
-consistent with `ClaimAmount`) and derive the modeling targets:
+The column `reMTPL2freq` holds one row per policy (risk features, claim count `ClaimNb`, and `Exposure`), `freMTPL2sev` holds the individual claim amounts. We aggregate claim amounts per policy and join;
+policies with no claim get `ClaimAmount = 0`. We apply the same light cleaning as the scikit-learn
+example (cap extreme values, make `ClaimNb` consistent with `ClaimAmount`) and derive the targets
 `Frequency = ClaimNb / Exposure`, `AvgClaimAmount = ClaimAmount / ClaimNb`, and
-`PurePremium = ClaimAmount / Exposure` (the expected cost per unit exposure, what we ultimately
-predict).
+`PurePremium = ClaimAmount / Exposure`.
 
-Note the feature columns: `VehBrand`, `VehGas`, `Region`, `Area` are **strings**; the rest are numeric on very different scales. A GLM cannot consume this directly, TabPFN can.
+Note the feature columns: `VehBrand`, `VehGas`, `Region`, `Area` are **strings**, the rest are
+numeric on very different scales. A GLM cannot consume this directly; TabPFN can.
 
 ```python
 freq = fetch_openml(data_id=41214, as_frame=True).frame   # policies: features + ClaimNb + Exposure
@@ -139,25 +164,25 @@ df[FEATURES + ["Exposure", "ClaimNb", "ClaimAmount", "PurePremium", "Frequency",
 ```console
 678,013 policies | 96.3% have ZERO claim amount | 24,944 claims
         VehAge  DrivAge VehBrand  VehPower     VehGas Region Area  BonusMalus  \
-298185       5       31       B2         7   'Diesel'    R24    B          51
-135927      12       27       B2         4  'Regular'    R24    C          90
-75668        3       46       B1         6   'Diesel'    R24    A          50
+147894       1       21       B3         7   'Diesel'    R53    C          90
+396360      18       78      B10         7  'Regular'    R93    E          50
 231941      13       21       B1         4   'Diesel'    R24    A         140
-568614       9       72       B1         5   'Diesel'    R24    C          50
+270621      14       18       B2         4  'Regular'    R82    D         100
+609318       2       33      B12        10  'Regular'    R94    D          80
 
         Density  Exposure  ClaimNb  ClaimAmount   PurePremium  Frequency  \
-298185       60      0.42        1     200000.0  4.761905e+05   2.380952
-135927      319      1.00        1     200000.0  2.000000e+05   1.000000
-75668        10      0.75        1     200000.0  2.666667e+05   1.333333
+147894      108      0.85        1     200000.0  2.352941e+05   1.176471
+396360     4762      0.58        1     200000.0  3.448276e+05   1.724138
 231941       37      0.16        2     200000.0  1.250000e+06  12.500000
-568614      405      0.36        1     200000.0  5.555556e+05   2.777778
+270621      863      0.32        1     200000.0  6.250000e+05   3.125000
+609318      645      0.53        2     200000.0  3.773585e+05   3.773585
 
         AvgClaimAmount
-298185        200000.0
-135927        200000.0
-75668         200000.0
+147894        200000.0
+396360        200000.0
 231941        100000.0
-568614        200000.0
+270621        200000.0
+609318        100000.0
 ```
 
 ```python
@@ -178,6 +203,11 @@ plt.show()
 
 ![The data](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/insurance_claim_modeling/plot-01.png)
 
+We hold out 25% of policies for testing with a **random** split. A production pricing model would
+usually be validated *out of time* (train on older policy years, test on newer) to catch drift, but
+freMTPL2 ships without a usable time index, so we follow the scikit-learn example and split at
+random; a simplification worth remembering for similar use cases.
+
 ```python
 df_train, df_test = train_test_split(df, test_size=0.25, random_state=RANDOM_STATE)
 pp_true = df_test["PurePremium"].to_numpy()
@@ -189,6 +219,28 @@ print(f"train {len(df_train):,} | test {len(df_test):,}")
 train 508,509 | test 169,504
 ```
 
+## Metrics
+
+Two questions matter for a pricing model, and they need different metrics.
+
+**Ranking / lift — does the model sort safe from risky policies?** This is what segmentation and
+pricing rely on, and our headline metric. We use the **exposure-weighted Gini**. Sort policies from
+safest to riskiest by predicted premium, then trace the cumulative share of *actual* claim cost
+against the cumulative share of exposure — the Lorenz curve $L(u)$. The Gini is (twice) the area
+between that curve and the diagonal:
+
+$$\mathrm{Gini} = 1 - 2\int_0^1 L(u)\,du$$
+
+Higher is better; a model with no information scores 0. In code it is `1 - 2 * auc(cum_exposure,
+cum_claims)`.
+
+**Calibration — is the predicted premium level right?** We use the **Tweedie deviance** (lower is
+better) and its normalized cousin **D²** (higher is better, an R²-style score), the standard loss for
+zero-inflated, right-skewed cost targets. This is exactly the GLM's own training objective.
+
+We deliberately skip MAE (degenerate on a 96%-zero target — it rewards predicting near-zero for
+everyone) and RMSE (dominated by a handful of catastrophic claims).
+
 ```python
 def gini_exposure(y_true, y_pred, exposure):
     order = np.argsort(y_pred)                     # ascending: safest -> riskiest
@@ -198,30 +250,33 @@ def gini_exposure(y_true, y_pred, exposure):
     cum_exp = np.cumsum(exp) / exp.sum()
     return 1 - 2 * auc(cum_exp, cum_claim)
 
-# We deliberately do NOT report MAE (degenerate on a 96%-zero target: it rewards
-# predicting near-zero for everyone) or RMSE (dominated by a few catastrophic
-# claims -- it is identical to 4 digits across all models here).
 def scores(pred):
     pred = np.clip(pred, 1e-6, None)               # Tweedie deviance needs strictly positive
     return {
+        "Gini (exposure)  up": gini_exposure(pp_true, pred, weight),
         "D2 (Tweedie 1.9)  up": d2_tweedie_score(pp_true, pred, sample_weight=weight, power=1.9),
         "Tweedie dev 1.9  down": mean_tweedie_deviance(pp_true, pred, sample_weight=weight, power=1.9),
         "Tweedie dev 1.5  down": mean_tweedie_deviance(pp_true, pred, sample_weight=weight, power=1.5),
-        "Gini (exposure)  up": gini_exposure(pp_true, pred, weight),
     }
 ```
 
 ## GLM baselines
 
-GLMs are linear models, so every feature has to be hand-engineered into a numeric design matrix:
-bin the skewed numerics, one-hot the categoricals, log-and-scale the heavy-tailed one. On top of
-that shared design matrix we fit the two classic recipes for the pure premium — first a
-**single-stage** direct Tweedie model, then the **two-stage** frequency × severity product.
+A GLM (generalized linear model) is a linear model with a link function — here a log link, so
+predictions stay positive. Being linear, every feature has to be hand-engineered into a numeric
+design matrix: bin the skewed numerics, one-hot the categoricals, log-and-scale the heavy-tailed one.
+On that shared design matrix we fit the two classic recipes for the pure premium — a **single-stage**
+direct Tweedie model, then the **two-stage** frequency × severity product.
+
+The hyperparameters (Tweedie power, regularization strengths) are taken straight from the
+scikit-learn tutorial and left untuned; in practice you would grid-search them. That cuts both ways
+in this comparison — TabPFN is also run untuned, on its defaults.
 
 ### Single-stage GLM: direct Tweedie on pure premium
 
-The simplest recipe: one `TweedieRegressor` fit straight on `PurePremium`, weighted by `Exposure`. No occurrence/severity
-split — a single model for the whole target. We set `power=1.9` following the scikit-learn tutorial; in practice this hyperparameter would be optimized on a grid.
+The simplest recipe: one `TweedieRegressor` fit straight on `PurePremium`, weighted by `Exposure`. No
+occurrence/severity split — a single model for the whole target. We set `power=1.9` following the
+scikit-learn tutorial.
 
 ```python
 def make_glm_preprocessor():
@@ -244,28 +299,23 @@ glm_tweedie = Pipeline([("prep", make_glm_preprocessor()),
                         ("reg", TweedieRegressor(power=1.9, alpha=0.1, max_iter=1000))])
 glm_tweedie.fit(Xtr, df_train["PurePremium"], reg__sample_weight=df_train["Exposure"])
 pp_glm_tweedie = glm_tweedie.predict(df_test[FEATURES])
-```
-
-```console
-GLM design matrix: 75 engineered columns from 9 raw features
-```
-
-```python
 scores(pp_glm_tweedie)
 ```
 
 ```console
-{'D2 (Tweedie 1.9)  up': 0.013734740755400598,
- 'Tweedie dev 1.9  down': 33.87828097427191,
- 'Tweedie dev 1.5  down': 76.40871982023906,
- 'Gini (exposure)  up': 0.2883310924949033}
+GLM design matrix: 75 engineered columns from 9 raw features
+{'Gini (exposure)  up': 0.28834550102009937,
+ 'D2 (Tweedie 1.9)  up': 0.013735296391564011,
+ 'Tweedie dev 1.9  down': 33.878261888130645,
+ 'Tweedie dev 1.5  down': 76.40873870601743}
 ```
 
 ### Two-stage GLM: frequency × severity
 
 The classic actuarial product: a **Poisson** frequency model (how often claims happen, weighted by
 exposure) times a **Gamma** severity model (average amount per claim, fit on claim rows only and
-weighted by claim count). Their product is the expected cost per unit exposure. Again, we follow the scikit learn tutorial, and set the hyperparameters accordingly.
+weighted by claim count). Their product is the expected cost per unit exposure. Again, we follow the
+scikit-learn tutorial and set the hyperparameters accordingly.
 
 ```python
 # Stage 1 - frequency: Poisson, weighted by exposure.
@@ -281,114 +331,99 @@ glm_sev.fit(Xtr[claim.values], df_train.loc[claim, "AvgClaimAmount"],
             reg__sample_weight=df_train.loc[claim, "ClaimNb"])
 
 pp_glm_product = glm_freq.predict(df_test[FEATURES]) * glm_sev.predict(df_test[FEATURES])
-```
-
-```python
 scores(pp_glm_product)
 ```
 
 ```console
-{'D2 (Tweedie 1.9)  up': 0.014582963672741034,
- 'Tweedie dev 1.9  down': 33.84914445744429,
- 'Tweedie dev 1.5  down': 76.16497654067228,
- 'Gini (exposure)  up': 0.3057401637188083}
+{'Gini (exposure)  up': 0.30667623396467025,
+ 'D2 (Tweedie 1.9)  up': 0.014606241449514612,
+ 'Tweedie dev 1.9  down': 33.84834486417605,
+ 'Tweedie dev 1.5  down': 76.15988353558402}
 ```
 
 ## TabPFN
 
-Now the same two recipes with TabPFN, but we feed the **raw dataframe** — strings, integers, and
-floats together, no encoding, no scaling, no binning, no per-dataset hyperparameter tuning. The one
-modeling choice we make is a log target transform (below), the natural choice for heavy-tailed
-monetary amounts.
+Now the same problem with TabPFN — but we feed the **raw dataframe**: strings, integers and floats
+together, no encoding, no scaling, no binning, no per-dataset tuning.
 
-Two adaptations because TabPFN has no `sample_weight`/offset (which the GLMs use for exposure):
+GLMs fold exposure in through `sample_weight` and an offset. TabPFN has neither, so we hand it the
+information directly instead:
 
-- **Exposure becomes an ordinary input feature**, and we model the *bounded* `ClaimAmount` rather
-  than the exploding per-exposure target `PurePremium` (amount / tiny-exposure blows up the tail).
-- **The pure premium is read off with a counterfactual query**: every test policy is predicted at a
-  full year of exposure (`Exposure = 1.0`), so the prediction is already the expected cost per unit
-  exposure — no division needed.
+- **Exposure becomes an ordinary input feature.** TabPFN learns its effect from the data rather than
+  you specifying it as an offset. We model the *bounded* `ClaimAmount` rather than the exploding
+  per-exposure `PurePremium` (dividing a claim by a tiny exposure blows up the tail).
+- **The pure premium is read off with a counterfactual query.** We predict every test policy at a
+  full year of exposure (`Exposure = 1.0`), so the output is already the expected cost per unit of
+  exposure, no division needed.
 
 ### Single-stage TabPFN: regress the claim amount directly
 
-The analog of the single-stage GLM: drop the occurrence/severity split entirely and hand a single
-`TabPFNRegressor` the raw, 96%-zero `ClaimAmount`, then query at full exposure. The simplest possible
-recipe, one `.fit()` — the scores below show what the target transform and the two-stage structure buy.
-
-A TabPFN bonus: `predict(..., output_type="full")` returns the **full predictive distribution**
-(mean, median, quantiles), not just a point estimate — we use the mean, the estimator of the
-expected cost.
+Start with the simplest thing that could work: hand a single `TabPFNRegressor` the raw, 96%-zero
+`ClaimAmount` and query at full exposure. One `.fit()`, one `.predict()`, default settings — nothing
+else. `.predict()` returns the mean of TabPFN's predicted distribution, the estimator of expected
+cost.
 
 ```python
 tab_features = FEATURES + ["Exposure"]
 X_tr = df_train[tab_features]
 
-reg_single = TabPFNRegressor(n_estimators=N_ESTIMATORS, ignore_pretraining_limits=True)
-reg_single.fit(X_tr, df_train["ClaimAmount"])
-
-# Counterfactual query: what would this policy cost over a FULL year?
+# Counterfactual test set: every policy evaluated at a FULL year of exposure.
 X_te_unit = df_test[tab_features].copy()
 X_te_unit["Exposure"] = 1.0
 
-# in TabPFN we can get the full distribution
-pp_tabpfn_single = reg_single.predict(X_te_unit, output_type="full")
-```
-
-```python
-pp_tabpfn_single.keys()
-```
-
-```console
-dict_keys(['mean', 'median', 'mode', 'quantiles', 'criterion', 'logits'])
-```
-
-```python
-scores(pp_tabpfn_single["mean"])
-```
-
-```console
-{'D2 (Tweedie 1.9)  up': -675.4243683338696,
- 'Tweedie dev 1.9  down': 23235.22459445761,
- 'Tweedie dev 1.5  down': 331.3394097941406,
- 'Gini (exposure)  up': 0.3146402565691172}
-```
-
-```python
-# The default target preprocessing struggles with a 96%-zero, heavy-tailed target: the
-# calibration above is far off. Setting a log target transform — the standard choice for
-# monetary amounts (same reason the GLMs use log links) — fixes most of it.
-reg_single = TabPFNRegressor(n_estimators=N_ESTIMATORS, ignore_pretraining_limits=True,
-                             inference_config={"REGRESSION_Y_PREPROCESS_TRANSFORMS": ("1_plus_log",)})
+reg_single = TabPFNRegressor(n_estimators=N_ESTIMATORS, ignore_pretraining_limits=True)
 reg_single.fit(X_tr, df_train["ClaimAmount"])
-pp_tabpfn_single = reg_single.predict(X_te_unit, output_type="full")
-```
-
-```python
-scores(pp_tabpfn_single["mean"])
+pp_single_vanilla = reg_single.predict(X_te_unit)   # plain mean point-estimate
+scores(pp_single_vanilla)
 ```
 
 ```console
-{'D2 (Tweedie 1.9)  up': -0.15469641202578832,
- 'Tweedie dev 1.9  down': 39.66390291041523,
- 'Tweedie dev 1.5  down': 99.05849234181795,
- 'Gini (exposure)  up': 0.3117645729694489}
+{'Gini (exposure)  up': 0.30680240684438265,
+ 'D2 (Tweedie 1.9)  up': -2175.0647170406223,
+ 'Tweedie dev 1.9  down': 74747.97597409683,
+ 'Tweedie dev 1.5  down': 692.3590850256587}
 ```
+
+The ranking is already competitive, the Gini lands in the same range as the two stage GLM, but the
+calibration is off: the Tweedie deviance is enormous and D² is deeply negative. TabPFN's
+default target handling is not built for a target that is 96% zeros with a heavy tail on the rest.
+
+The fix is the same one the GLMs bake in through their log link: model the target on a **log scale**.
+TabPFN exposes this as a target transform, `1_plus_log` (fit on `log(1 + y)`, invert on output), the
+natural choice for monetary amounts. This is the one modeling knob we touch.
+
+```python
+reg_single = TabPFNRegressor(
+    n_estimators=N_ESTIMATORS, ignore_pretraining_limits=True,
+    inference_config={"REGRESSION_Y_PREPROCESS_TRANSFORMS": ("1_plus_log",)},
+)
+reg_single.fit(X_tr, df_train["ClaimAmount"])
+pp_tabpfn_single = reg_single.predict(X_te_unit)    # plain mean point-estimate
+scores(pp_tabpfn_single)
+```
+
+```console
+{'Gini (exposure)  up': 0.3062529264409002,
+ 'D2 (Tweedie 1.9)  up': -0.1560920028968369,
+ 'Tweedie dev 1.9  down': 39.71184155492424,
+ 'Tweedie dev 1.5  down': 98.82921431822498}
+```
+
+Results show that the ranking quality stays intact, while we severely improve the calibration quality.
 
 ### Two-stage TabPFN: occurrence × severity
 
-The analog of the two-stage GLM, but with no frequency/Gamma machinery:
+The actuarial decomposition, with no Poisson/Gamma machinery, just two TabPFN models:
 
-- **Stage 1 — occurrence:** `TabPFNClassifier` for `P(claim > 0)`.
-- **Stage 2 — severity:** `TabPFNRegressor` for `E[ClaimAmount | claim > 0]`, trained on claim rows only.
+- **Stage 1 — occurrence:** a `TabPFNClassifier` for `P(claim > 0)`.
+- **Stage 2 — severity:** a `TabPFNRegressor` for `E[ClaimAmount | claim > 0]`, trained on claim rows
+  only.
 
-Expected cost is `P(claim) × severity`. Both stages are queried at `Exposure = 1.0`, so the
-product is already the pure premium.
+Expected cost is `P(claim) × severity`. Both stages are queried at `Exposure = 1.0`, so the product
+is already the pure premium. We use each stage's **mean** here; the next section pulls stage 2's full
+predictive distribution for a handful of example policies.
 
 ```python
-# Counterfactual test set: every policy evaluated at a FULL year of exposure
-X_te_unit = df_test[tab_features].copy()
-X_te_unit["Exposure"] = 1.0
-
 # Stage 1: occurrence  P(claim > 0 | full year)
 clf = TabPFNClassifier(n_estimators=N_ESTIMATORS, ignore_pretraining_limits=True)
 clf.fit(X_tr, (df_train["ClaimAmount"] > 0).astype(int))
@@ -396,119 +431,178 @@ p_claim = clf.predict_proba(X_te_unit)[:, list(clf.classes_).index(1)]
 ```
 
 ```python
-# Stage 2: severity  E[ClaimAmount | claim > 0]
+# Stage 2: severity  E[ClaimAmount | claim > 0], trained on claim rows only.
 pos = (df_train["ClaimAmount"] > 0).values
-reg = TabPFNRegressor(n_estimators=N_ESTIMATORS, ignore_pretraining_limits=True, inference_config={"REGRESSION_Y_PREPROCESS_TRANSFORMS": ("1_plus_log",)})
-reg.fit(X_tr[pos], df_train.loc[pos, "ClaimAmount"])
-severity = reg.predict(X_te_unit, output_type="full")
-```
+reg_sev = TabPFNRegressor(
+    n_estimators=N_ESTIMATORS, ignore_pretraining_limits=True,
+    inference_config={"REGRESSION_Y_PREPROCESS_TRANSFORMS": ("1_plus_log",)},
+)
+reg_sev.fit(X_tr[pos], df_train.loc[pos, "ClaimAmount"])
+sev_mean = reg_sev.predict(X_te_unit)          # mean severity per policy (point estimate)
 
-```python
-pp_tabpfn = p_claim * severity["mean"]
+pp_tabpfn = p_claim * sev_mean
 scores(pp_tabpfn)
 ```
 
 ```console
-{'D2 (Tweedie 1.9)  up': -0.02080075361396938,
- 'Tweedie dev 1.9  down': 35.0645776331718,
- 'Tweedie dev 1.5  down': 81.90677245047317,
- 'Gini (exposure)  up': 0.32079809781930857}
+{'Gini (exposure)  up': 0.32104571636786383,
+ 'D2 (Tweedie 1.9)  up': -0.02263779649804487,
+ 'Tweedie dev 1.9  down': 35.127680185355544,
+ 'Tweedie dev 1.5  down': 82.20730113027466}
 ```
 
-### Recalibrating the two-stage level
+We can now see that the two stage TabPFN solution clearly outperforms all other solutions in the important Gini metric.
 
-The two-stage TabPFN ranks well but under-predicts the premium **level** (hence the negative D²): both stages are biased low — the classifier's probabilities are shrunk toward the base rate, and the `1_plus_log` severity mean under-weights the heavy tail. The GLMs don't have this problem: a log-link GLM with an intercept is automatically *balanced* on its training portfolio. We give TabPFN the same single degree of freedom — a **constant factor** estimated on a calibration slice carved out of the training set (never test).
+## Per-policy uncertainty: the whole distribution, not just a number
 
-We compute two views of it:
+A GLM's severity model hands you one number per policy — the fitted mean. TabPFN's severity model
+returns a **full predictive distribution**: for each policy we can read the expected claim *and* any
+quantile of how large it might be. In insurance that tail is not a nice-to-have — the 90th- or
+99th-percentile claim is what drives risk loading, capital and reinsurance.
 
-- **Per-stage factors** (diagnostics): how far off is each stage's mean on its own?
-- **Direct product-level factor** (applied): actual cal claim cost ÷ what the deployed pipeline would have charged the cal policies. This targets exactly the exposure-weighted product that the balance measures, so the p×s correlation across policies and the claimant-selection effect are inside the estimate — the per-stage product misses both and undershoots.
-
-A constant factor is Gini-safe: `c·(p×s)` orders policies exactly like `p×s`, so this fixes calibration without touching the ranking result.
-
-One TabPFN-specific catch: rows that are *in context* are effectively memorized, so the models used to score the calibration slice must be re-fit without it.
+We only need this for a few illustrative policies, so we ask stage 2 for the full output
+(`output_type="full"`) on a small subset. (The hosted client caps full regression output at a few
+hundred rows per call — plenty here, since we just want a spread of examples across the risk range.)
 
 ```python
-# Calibration slice carved out of TRAIN (never test). TabPFN effectively memorizes its
-# in-context rows, so the models used to score the cal slice are re-fit WITHOUT it.
+# Pick a spread of example policies across the predicted-severity range, then request the
+# FULL predictive distribution for just those (the client caps full output at a few hundred rows).
+order = np.argsort(sev_mean)
+sel = order[np.linspace(0, len(order) - 1, 80).astype(int)]
+
+dist = reg_sev.predict(X_te_unit.iloc[sel], output_type="full",
+                       quantiles=[0.1, 0.25, 0.5, 0.75, 0.9])
+np.asarray(dist["quantiles"]).shape   # (5 quantiles, len(sel) policies)
+```
+
+```console
+(5, 80)
+```
+
+The chart below plots those policies ordered safest → riskiest by predicted severity. The two lines
+are the **mean** TabPFN would price on (red, dashed) and the **median** claim (dark); the shaded fan
+is the predictive interval — the inner band the 25th–75th percentile, the outer the 10th–90th. The fan
+widens toward the risky end: TabPFN is not only predicting a larger claim there, it is telling you the
+outcome is *less certain*. That top edge, the plausible worst case, is exactly what a mean-only model
+cannot give you.
+
+```python
+q = np.asarray(dist["quantiles"])            # (5, len(sel)): 0.1, 0.25, 0.5, 0.75, 0.9
+p10, p25, median, p75, p90 = q
+mean = np.asarray(dist["mean"])
+x = np.arange(len(sel))
+
+fig, ax = plt.subplots(figsize=(9, 4.4))
+ax.fill_between(x, p10, p90, color="#4f81bd", alpha=0.18, lw=0, label="10th-90th percentile")
+ax.fill_between(x, p25, p75, color="#4f81bd", alpha=0.35, lw=0, label="25th-75th percentile")
+ax.plot(x, median, color="#1f3b63", lw=2, label="median")
+ax.plot(x, mean, color="#c0504d", lw=1.8, ls="--", label="mean (the price)")
+
+ax.set_yscale("log")
+ax.margins(x=0)
+ax.set_xticks([])
+ax.set_xlabel("example policies, ordered safest to riskiest by predicted severity")
+ax.set_ylabel("claim amount given a claim")
+ax.set_title("TabPFN predicts a full severity distribution per policy, not just a mean")
+ax.grid(axis="y", ls=":", alpha=0.4)
+ax.spines["top"].set_visible(False)
+ax.spines["right"].set_visible(False)
+ax.legend(frameon=False, fontsize=9, loc="upper left")
+plt.tight_layout()
+plt.show()
+```
+
+![Per-policy uncertainty: the whole distribution, not just a number](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/insurance_claim_modeling/plot-02.png)
+
+The same idea as a table: for a few of those policies, the mean claim you would *price* on versus the
+90th-percentile claim you would *reserve capital* for. TabPFN gives you both from a single `.predict`;
+the GLM's Gamma gives you only the first.
+
+```python
+ex = [1, len(sel) // 2, len(sel) - 2]        # positions within the example subset
+pd.DataFrame({
+    "DrivAge": df_test["DrivAge"].to_numpy()[sel][ex],
+    "VehPower": df_test["VehPower"].to_numpy()[sel][ex],
+    "mean claim (price)": mean[ex].round(0),
+    "P90 claim (tail)": p90[ex].round(0),
+}, index=[f"policy {i + 1}" for i in range(len(ex))])
+```
+
+```console
+          DrivAge  VehPower  mean claim (price)  P90 claim (tail)
+policy 1       45        10              1393.0            1488.0
+policy 2       25         6              1639.0            1586.0
+policy 3       39         6              1897.0            2410.0
+```
+
+## Optional: matching the GLM on calibration
+
+The two-stage TabPFN *ranks* well but **under-prices the portfolio**: summed over the test set it
+charges only ~60% of the actual claim cost. A log-link GLM never has this problem, fitting an intercept automatically
+balances its predicted total against the observed total on the training data.
+
+We can give TabPFN the same single degree of freedom: one **constant factor** = actual claim cost ÷
+predicted cost, estimated on a calibration slice held out of training (never the test set). Because it
+is a constant, `c · (p × s)` orders policies exactly like `p × s` — so it fixes the *level* without
+moving the *ranking* one bit.
+
+One TabPFN-specific catch: TabPFN predicts by conditioning on its training rows *in-context*, so it
+effectively memorizes them — a policy it saw at fit time gets an unrealistically good prediction.
+Estimating the factor on such rows would under-correct, so we re-fit both stages on a subset
+(`df_fit`) and score the held-out slice (`df_cal`) they never saw.
+
+```python
+# Calibration slice held out of TRAIN (never test); models re-fit WITHOUT it so the
+# scored rows were not memorized in-context.
 df_fit, df_cal = train_test_split(df_train, test_size=0.1, random_state=RANDOM_STATE)
 X_fit = df_fit[tab_features]
 X_cal_unit = df_cal[tab_features].copy()
 X_cal_unit["Exposure"] = 1.0
-has_claim_cal = (df_cal["ClaimAmount"] > 0).to_numpy()
 
-# Stage 1 on df_fit: P(claim > 0 | full year) for every cal policy
 clf_cal = TabPFNClassifier(n_estimators=N_ESTIMATORS, ignore_pretraining_limits=True)
 clf_cal.fit(X_fit, (df_fit["ClaimAmount"] > 0).astype(int))
 p_claim_cal = clf_cal.predict_proba(X_cal_unit)[:, list(clf_cal.classes_).index(1)]
 
-# Stage 2 on df_fit claim rows: severity for EVERY cal policy (not just claimants) — the
-# product-level factor must weight severity exactly the way the deployed pipeline does.
 pos_fit = (df_fit["ClaimAmount"] > 0).values
-reg_cal = TabPFNRegressor(n_estimators=N_ESTIMATORS, ignore_pretraining_limits=True,
-                          inference_config={"REGRESSION_Y_PREPROCESS_TRANSFORMS": ("1_plus_log",)})
+reg_cal = TabPFNRegressor(
+    n_estimators=N_ESTIMATORS, ignore_pretraining_limits=True,
+    inference_config={"REGRESSION_Y_PREPROCESS_TRANSFORMS": ("1_plus_log",)},
+)
 reg_cal.fit(X_fit[pos_fit], df_fit.loc[pos_fit, "ClaimAmount"])
-severity_cal = reg_cal.predict(X_cal_unit, output_type="full")["mean"]
-```
+severity_cal = reg_cal.predict(X_cal_unit)   # mean; plain predict avoids the full-output row cap
 
-```python
-# Per-stage factors — DIAGNOSTICS only: which stage is biased, and by how much?
-occ_factor = (has_claim_cal.sum() / df_cal["Exposure"].sum()) / p_claim_cal.mean()
-sev_factor = (df_cal.loc[has_claim_cal, "ClaimAmount"].mean()
-              / severity_cal[has_claim_cal].mean())
-
-# Direct product-level factor — APPLIED: actual cal cost / what the deployed pipeline
-# would have charged the cal policies. Rescales the product itself, so the p×s
-# correlation, claimant selection, and exposure weighting are all inside the estimate.
-# (The analogue of the balancing a log-link GLM's intercept performs on train.)
+# One constant: actual claim cost / predicted cost on the held-out slice (exposure-weighted).
 pp_cal = p_claim_cal * severity_cal
-c_direct = df_cal["ClaimAmount"].sum() / (pp_cal * df_cal["Exposure"]).sum()
+c = df_cal["ClaimAmount"].sum() / (pp_cal * df_cal["Exposure"]).sum()
 
-pp_tabpfn_recal = c_direct * pp_tabpfn   # constant scaling: Gini unchanged
+pp_tabpfn_recal = c * pp_tabpfn                    # constant scaling: Gini unchanged
 
 bal_before = (pp_tabpfn * weight).sum() / (pp_true * weight).sum()
 bal_after = (pp_tabpfn_recal * weight).sum() / (pp_true * weight).sum()
-print(f"diagnostics: occurrence {occ_factor:.3f} x severity {sev_factor:.3f} "
-      f"= {occ_factor * sev_factor:.3f}")
-print(f"applied:     direct product-level factor {c_direct:.3f} "
-      f"(gap vs per-stage product = p×s correlation + claimant selection)")
-print(f"test balance (pred/actual): {bal_before:.3f} -> {bal_after:.3f}")
+print(f"rescale factor c = {c:.3f}")
+print(f"portfolio balance (predicted / actual): {bal_before:.3f} -> {bal_after:.3f}")
 scores(pp_tabpfn_recal)
 ```
 
 ```console
-diagnostics: occurrence 1.313 x severity 1.159 = 1.522
-applied:     direct product-level factor 1.634 (gap vs per-stage product = p×s correlation + claimant selection)
-test balance (pred/actual): 0.585 -> 0.956
-{'D2 (Tweedie 1.9)  up': 0.009552132415574066,
- 'Tweedie dev 1.9  down': 34.02195386471774,
- 'Tweedie dev 1.5  down': 77.04185006022182,
- 'Gini (exposure)  up': 0.32079809781930857}
+rescale factor c = 1.637
+portfolio balance (predicted / actual): 0.584 -> 0.956
+{'Gini (exposure)  up': 0.32104571636786383,
+ 'D2 (Tweedie 1.9)  up': 0.00880833559375449,
+ 'Tweedie dev 1.9  down': 34.04750333782467,
+ 'Tweedie dev 1.5  down': 77.20614578550321}
 ```
 
 ## Results
 
-All models side by side, then three complementary views: the **Lorenz curves** (ranking), a
-**decile calibration chart** (is the premium level right segment by segment?), and a **double
-lift chart** (head-to-head: where the two champions disagree, who is right?).
-
-**Lorenz curves**: for each model, policies are sorted safest → riskiest by predicted premium, and
-we plot the cumulative share of *actual* claim cost against the cumulative share of exposure.
-Lower / more bowed = better risk separation; the Gini in the legend is (twice) the area between
-each curve and the diagonal.
-
-Two reference lines frame the plot: **random** (the diagonal — no information) and the **oracle**
-(sorted by realized losses — Gini 0.984, not 1.0, because the claim-bearing policies still occupy
-~4% of the exposure axis). No expected-risk model can approach the oracle: realized claims are
-mostly luck; a model can only rank who is riskier *on average*. Note the recalibrated two-stage
-curve overlays the uncalibrated one exactly — constant rescaling fixes the level without moving a
-single policy in the ranking.
+All five models side by side, then two views: the **Lorenz curves** (ranking) and a **decile
+calibration chart** (is the premium level right, segment by segment?).
 
 ```python
 table = pd.DataFrame({
     "GLM Tweedie(1.9)": scores(pp_glm_tweedie),
     "GLM Poisson x Gamma": scores(pp_glm_product),
-    "TabPFN single-stage": scores(pp_tabpfn_single["mean"]),
+    "TabPFN single-stage": scores(pp_tabpfn_single),
     "TabPFN two-stage": scores(pp_tabpfn),
     "TabPFN two-stage recal.": scores(pp_tabpfn_recal),
 })
@@ -517,32 +611,40 @@ table.round(4)
 
 ```console
                        GLM Tweedie(1.9)  GLM Poisson x Gamma  \
+Gini (exposure)  up              0.2883               0.3067
 D2 (Tweedie 1.9)  up             0.0137               0.0146
-Tweedie dev 1.9  down           33.8783              33.8491
-Tweedie dev 1.5  down           76.4087              76.1650
-Gini (exposure)  up              0.2883               0.3057
+Tweedie dev 1.9  down           33.8783              33.8483
+Tweedie dev 1.5  down           76.4087              76.1599
 
                        TabPFN single-stage  TabPFN two-stage  \
-D2 (Tweedie 1.9)  up               -0.1547           -0.0208
-Tweedie dev 1.9  down              39.6639           35.0646
-Tweedie dev 1.5  down              99.0585           81.9068
-Gini (exposure)  up                 0.3118            0.3208
+Gini (exposure)  up                 0.3063            0.3210
+D2 (Tweedie 1.9)  up               -0.1561           -0.0226
+Tweedie dev 1.9  down              39.7118           35.1277
+Tweedie dev 1.5  down              98.8292           82.2073
 
                        TabPFN two-stage recal.
-D2 (Tweedie 1.9)  up                    0.0096
-Tweedie dev 1.9  down                  34.0220
-Tweedie dev 1.5  down                  77.0419
-Gini (exposure)  up                     0.3208
+Gini (exposure)  up                     0.3210
+D2 (Tweedie 1.9)  up                    0.0088
+Tweedie dev 1.9  down                  34.0475
+Tweedie dev 1.5  down                  77.2061
 ```
+
+**Lorenz curves.** Policies are sorted safest → riskiest by predicted premium; we plot the cumulative
+share of *actual* claim cost against the cumulative share of exposure. A lower, more bowed curve means
+better risk separation. Two reference lines frame it: **random** (the diagonal) and the **oracle**
+(sorted by realized losses — Gini ~0.98, not 1.0, because claim-bearing policies still occupy a few
+percent of the exposure axis). No expected-risk model can reach the oracle: realized claims are mostly
+luck, and a model can only rank who is riskier *on average*. The recalibrated two-stage curve overlays
+the uncalibrated one exactly — constant rescaling never reorders a single policy.
 
 ```python
 fig, ax = plt.subplots(figsize=(6.2, 6.2))
 curves = [
     ("GLM Tweedie(1.9)", pp_glm_tweedie, "#9bbb59", "-"),
     ("GLM Poisson x Gamma", pp_glm_product, "#4f81bd", "-"),
-    ("TabPFN single-stage", pp_tabpfn_single["mean"], "#8064a2", "-"),
+    ("TabPFN single-stage", pp_tabpfn_single, "#8064a2", "-"),
     ("TabPFN two-stage", pp_tabpfn, "#c0504d", "-"),
-    # Constant rescaling preserves the ordering, so this overlays two-stage exactly
+    # Constant rescaling preserves the ordering, so this overlays two-stage exactly.
     ("TabPFN two-stage recal.", pp_tabpfn_recal, "#f79646", ":"),
 ]
 for label, pred, color, ls in curves:
@@ -569,30 +671,23 @@ plt.tight_layout()
 plt.show()
 ```
 
-![Results](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/insurance_claim_modeling/plot-02.png)
+![Results](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/insurance_claim_modeling/plot-03.png)
 
 ## Takeaways
 
-- **TabPFN wins on ranking.** The two-stage TabPFN reaches **Gini 0.321 vs 0.306** for the best
-  GLM — meaningfully better risk separation, which is what drives pricing and segmentation — from
-  the raw 9-feature dataframe.
-- **Zero feature engineering.** The GLM needed a hand-built design matrix (binning, one-hot,
-  log-scaling — 75 engineered columns and several modeling choices). TabPFN consumed the raw
-  dataframe — strings and all — with a plain `.fit()` / `.predict()`.
-- **Calibration is comparable after rebalancing.** Out of the box TabPFN under-predicts the premium
-  *level*: it has no exposure weights/offsets (a structural advantage the GLMs keep), and the
-  log-transformed severity mean under-weights the heavy tail. A single portfolio-level factor
-  estimated on a training calibration slice — the same balancing a log-link GLM's intercept
-  performs implicitly — restores the level (balance 0.59 → 0.96) and brings the Tweedie deviance
-  within 0.5% of the GLMs (34.02 vs 33.85), while provably leaving the Gini untouched (see the
-  overlapping Lorenz curves). Worth noting: the calibration metric is the GLM's own training
-  objective, exposure weights included — deviance parity from a model that never optimized it is
-  arguably the stronger result.
-- **The two-stage structure matters for TabPFN too.** Modeling occurrence and severity separately
-  is better calibrated than a single regressor on the raw zero-inflated amount, mirroring the
-  classic actuarial decomposition.
-- **Right metric, right conclusion.** On zero-inflated cost, judge *calibration* with Tweedie
-  deviance/D² and the decile chart, *ranking* with the exposure-weighted Gini, and settle
-  head-to-head comparisons with the double lift chart. We deliberately do not report MAE
-  (degenerate: it rewards predicting near-zero for everyone) or RMSE (dominated by a few
-  catastrophic claims — identical to 4 digits across all models here).
+- **Better ranking, zero feature engineering.** From the raw 9-column dataframe — strings and all, one
+  `.fit()` / `.predict()` — TabPFN reaches Gini ~0.32 vs ~0.31 for the best GLM. The GLM needed a
+  hand-built 75-column design matrix (binning, one-hot, log-scaling) and several modeling choices to
+  get there.
+- **Uncertainty comes built in.** TabPFN returns a full predictive distribution per policy, so you
+  read off the expected claim *and* its tail (the P90 "bad case") directly — exactly what risk loading
+  and capital planning need. The GLM gives a mean and stops.
+- **Calibration is a one-liner away.** Out of the box TabPFN under-prices the portfolio (it has no
+  exposure offset, a genuine convenience the GLMs keep). A single portfolio-level factor — the same
+  balancing a log-link GLM performs implicitly — restores the level (balance ~0.6 → ~0.96) and brings
+  the Tweedie deviance in line with the GLMs, while provably leaving the ranking untouched.
+- **The two-stage split helps TabPFN too.** Occurrence × severity is better calibrated than a single
+  regressor on the raw zero-inflated amount — the classic actuarial decomposition still pays off.
+- **Match the metric to the question.** Judge *ranking* with the exposure-weighted Gini (the headline
+  for pricing) and *calibration* with Tweedie deviance / D² and the decile chart. MAE and RMSE are
+  actively misleading on a 96%-zero, heavy-tailed target.
