@@ -44,7 +44,9 @@ binning, one-hot encoding, log-scaling, and choosing link functions and a Tweedi
 forward pass with **no per-dataset training and no preprocessing**, you hand it the raw dataframe
 (mixed numeric and string columns, missing values and all). This notebook puts TabPFN head-to-head
 with matching scikit-learn GLM baselines on the standard French Motor Third-Party Liability
-(freMTPL2) dataset.
+(freMTPL2) dataset. For both the GLM and TabPFN we run the two classic recipes, a **single-stage**
+direct model and the **two-stage** frequency × severity (occurrence × severity) decomposition, so
+every comparison is like-for-like.
 
 **Bottom line up front:**
 
@@ -58,14 +60,20 @@ with matching scikit-learn GLM baselines on the standard French Motor Third-Part
   TabPFN matches the GLM on calibration while leaving the ranking untouched.
 
 We score with the metrics actuaries actually use: the **exposure-weighted Gini** (ranking / lift) and
-**Tweedie deviance / D²** (calibration).
+**Tweedie deviance / D²** (calibration, the standard loss for zero-inflated cost; both are
+defined in the Metrics section below).
 
-> **Requirements.** A CUDA GPU (H100-class recommended for the full dataset). The first TabPFN call
-> downloads the model weights. Baselines, dataset explanation and metrics follow scikit-learn's
+> **Requirements.** This notebook runs on the hosted TabPFN client (`tabpfn-client`), so no local GPU is
+> needed; you just need a free API token (see the setup cells below). Baselines, dataset explanation and metrics follow scikit-learn's
 > [Tweedie regression on insurance claims](https://scikit-learn.org/stable/auto_examples/linear_model/plot_tweedie_regression_insurance_claims.html) example which motivated this tutorial.
 
 ```python
 #!pip install tabpfn_client matplotlib scikit-learn
+```
+
+```console
+Using Python 3.13.14 environment at: /Users/psinger/projects/tabpfn-cookbook/.venv
+Checked 3 packages in 42ms
 ```
 
 ```python
@@ -96,7 +104,7 @@ FEATURES = ["VehAge", "DrivAge", "VehBrand", "VehPower", "VehGas",
             "Region", "Area", "BonusMalus", "Density"]
 ```
 
-In this notebook, we use the TabPFN CLient accessing the API; no hardware required when running the model.
+In this notebook, we use the TabPFN client to access the API, so no hardware is required to run the model.
 
 ```python
 from tabpfn_client import TabPFNClassifier, TabPFNRegressor, get_access_token
@@ -377,13 +385,6 @@ pp_single_vanilla = reg_single.predict(X_te_unit)   # plain mean point-estimate
 scores(pp_single_vanilla)
 ```
 
-```console
-{'Gini (exposure)  up': 0.30680240684438265,
- 'D2 (Tweedie 1.9)  up': -2175.0647170406223,
- 'Tweedie dev 1.9  down': 74747.97597409683,
- 'Tweedie dev 1.5  down': 692.3590850256587}
-```
-
 The ranking is already competitive, the Gini lands in the same range as the two stage GLM, but the
 calibration is off: the Tweedie deviance is enormous and D² is deeply negative. TabPFN's
 default target handling is not built for a target that is 96% zeros with a heavy tail on the rest.
@@ -471,29 +472,26 @@ order = np.argsort(sev_mean)
 sel = order[np.linspace(0, len(order) - 1, 80).astype(int)]
 
 dist = reg_sev.predict(X_te_unit.iloc[sel], output_type="full",
-                       quantiles=[0.1, 0.25, 0.5, 0.75, 0.9])
-np.asarray(dist["quantiles"]).shape   # (5 quantiles, len(sel) policies)
-```
-
-```console
-(5, 80)
+                       quantiles=[0.1, 0.25, 0.5, 0.75, 0.9, 0.99])
+np.asarray(dist["quantiles"]).shape   # (6 quantiles, len(sel) policies)
 ```
 
 The chart below plots those policies ordered safest → riskiest by predicted severity. The two lines
 are the **mean** TabPFN would price on (red, dashed) and the **median** claim (dark); the shaded fan
-is the predictive interval — the inner band the 25th–75th percentile, the outer the 10th–90th. The fan
-widens toward the risky end: TabPFN is not only predicting a larger claim there, it is telling you the
-outcome is *less certain*. That top edge, the plausible worst case, is exactly what a mean-only model
-cannot give you.
+is the predictive interval — the inner band the 25th–75th percentile (the typical range), the outer
+the 10th–99th (reaching into the tail). Two things to read off it: the fan **widens toward the risky
+end** (TabPFN is telling you the outcome there is *less certain*, not just larger), and the dashed
+mean **rides above the median** — that gap is the heavy tail at work. Pricing on the mean already
+carries the cost of rare large claims, which is exactly what a median- or mean-only summary hides.
 
 ```python
-q = np.asarray(dist["quantiles"])            # (5, len(sel)): 0.1, 0.25, 0.5, 0.75, 0.9
-p10, p25, median, p75, p90 = q
+q = np.asarray(dist["quantiles"])                       # (6, len(sel)) quantiles
+p10, p25, median, p75, p90, p99 = q
 mean = np.asarray(dist["mean"])
 x = np.arange(len(sel))
 
 fig, ax = plt.subplots(figsize=(9, 4.4))
-ax.fill_between(x, p10, p90, color="#4f81bd", alpha=0.18, lw=0, label="10th-90th percentile")
+ax.fill_between(x, p10, p99, color="#4f81bd", alpha=0.15, lw=0, label="10th-99th percentile")
 ax.fill_between(x, p25, p75, color="#4f81bd", alpha=0.35, lw=0, label="25th-75th percentile")
 ax.plot(x, median, color="#1f3b63", lw=2, label="median")
 ax.plot(x, mean, color="#c0504d", lw=1.8, ls="--", label="mean (the price)")
@@ -511,8 +509,6 @@ ax.legend(frameon=False, fontsize=9, loc="upper left")
 plt.tight_layout()
 plt.show()
 ```
-
-![Per-policy uncertainty: the whole distribution, not just a number](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/insurance_claim_modeling/plot-02.png)
 
 The same idea as a table: for a few of those policies, the mean claim you would *price* on versus the
 90th-percentile claim you would *reserve capital* for. TabPFN gives you both from a single `.predict`;
@@ -593,10 +589,62 @@ portfolio balance (predicted / actual): 0.584 -> 0.956
  'Tweedie dev 1.5  down': 77.20614578550321}
 ```
 
+The rescale is easiest to see decile by decile: bin the test policies by predicted premium and plot
+the predicted premium (x) against the actual claim cost (y) in each bin. **Before**, the two-stage
+points sit consistently *above* the diagonal — actual cost exceeds what the model charged, i.e.
+under-pricing; **after** the single constant factor they land on it. The GLM is drawn faintly in both
+panels for reference, and the ranking is identical between them — only the level moves.
+
+```python
+from matplotlib.ticker import ScalarFormatter, NullFormatter, LogLocator
+
+
+def decile_calibration(pred, n_bins=10):
+    order = np.argsort(pred)
+    exp = weight[order]
+    edges = np.searchsorted(np.cumsum(exp) / exp.sum(), np.linspace(0, 1, n_bins + 1)[1:-1])
+    pm, tm = [], []
+    for g in np.split(order, edges):
+        pm.append(np.average(pred[g], weights=weight[g]))
+        tm.append(np.average(pp_true[g], weights=weight[g]))
+    return np.clip(pm, 1e-1, None), np.clip(tm, 1e-1, None)
+
+panels = [("Before rescaling", pp_tabpfn, "#c0504d"),
+          (f"After rescaling (x{c:.2f})", pp_tabpfn_recal, "#f79646")]
+gpm, gtm = decile_calibration(pp_glm_product)            # GLM reference, drawn in both panels
+curves = {t: decile_calibration(pred) for t, pred, _ in panels}
+allv = np.concatenate([gpm, gtm, *[v for pr in curves.values() for v in pr]])
+lo, hi = allv.min(), allv.max()
+
+fig, axes = plt.subplots(1, 2, figsize=(11, 4.6), sharex=True, sharey=True)
+for ax, (title, _, color) in zip(axes, panels):
+    pm, tm = curves[title]
+    ax.plot([lo, hi], [lo, hi], "--", color="grey", lw=1, label="perfect calibration")
+    ax.plot(gpm, gtm, "o-", color="#4f81bd", lw=1.5, ms=4, alpha=0.5, label="GLM (reference)")
+    ax.plot(pm, tm, "o-", color=color, lw=2, ms=5, label="TabPFN two-stage")
+    ax.set(xscale="log", yscale="log", title=title,
+           xlabel="predicted pure premium (decile mean)")
+    # Adaptive 1-2-5 decade ticks with plain-number labels; suppress crowded minor labels.
+    for axis in (ax.xaxis, ax.yaxis):
+        axis.set_major_locator(LogLocator(base=10, subs=(1, 2, 5)))
+        axis.set_major_formatter(ScalarFormatter())
+        axis.set_minor_formatter(NullFormatter())
+    ax.grid(ls=":", alpha=0.4)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.legend(frameon=False, fontsize=8, loc="upper left")
+axes[0].set_ylabel("actual pure premium (decile mean)")
+fig.suptitle("Decile calibration: points above the diagonal = under-pricing")
+plt.tight_layout()
+plt.show()
+```
+
+![Optional: matching the GLM on calibration](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/insurance_claim_modeling/plot-02.png)
+
 ## Results
 
-All five models side by side, then two views: the **Lorenz curves** (ranking) and a **decile
-calibration chart** (is the premium level right, segment by segment?).
+All five models side by side, then the **Lorenz curves** for the ranking view (calibration was
+covered in the section above).
 
 ```python
 table = pd.DataFrame({
