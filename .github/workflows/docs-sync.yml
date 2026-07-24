@@ -106,16 +106,22 @@ jobs:
           MINTLIFY_PROJECT_ID: ${{ secrets.MINTLIFY_PROJECT_ID }}
           PREVIEW_BRANCH: cookbook/pr-${{ github.event.pull_request.number }}
         run: |
-          response="$(curl --fail-with-body -sS -X POST \
+          http_code="$(curl -sS -o /tmp/mintlify-preview.json -w '%{http_code}' -X POST \
             "https://api.mintlify.com/v1/project/preview/${MINTLIFY_PROJECT_ID}" \
             -H "Authorization: Bearer ${MINTLIFY_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "{\"branch\":\"${PREVIEW_BRANCH}\"}")"
-          echo "$response"
-          preview_url="$(uv run python -c 'import json,sys; print(json.load(sys.stdin).get("previewUrl") or "")' <<<"$response")"
+          echo "Mintlify HTTP status: ${http_code}"
+          echo "Mintlify response body:"
+          cat /tmp/mintlify-preview.json
+          echo
+          preview_url="$(uv run python -c 'import json,sys; print(json.load(sys.stdin).get("previewUrl") or "")' </tmp/mintlify-preview.json 2>/dev/null || true)"
           if [ -z "$preview_url" ]; then
-            echo "Mintlify response did not include previewUrl." >&2
+            echo "Mintlify response did not include previewUrl (HTTP ${http_code})." >&2
             exit 1
+          fi
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "Mintlify returned HTTP ${http_code} but included previewUrl; continuing." >&2
           fi
           echo "preview_url=$preview_url" >> "$GITHUB_OUTPUT"
 
