@@ -50,13 +50,6 @@ Relevant resources:
 
 This example uses the local PyTorch-backed TabPFN implementation because the optimizer refines candidates with gradients (`differentiable_input=True`).
 
-Install notes:
-
-- Extra name uses an **underscore**: `bayesian_optimization`.
-- As of `tabpfn-extensions` 0.4.3 on PyPI, that extra is not published yet, so we install from the GitHub repo. Once a release includes it, switch to `pip install "tabpfn-extensions[bayesian_optimization]"`.
-- The extra pulls in `botorch` for the Hartmann benchmark objective.
-- Pin `tqdm` if `tabpfn-client` is also present in the environment.
-
 ```python
 !pip install -q -U "tabpfn-extensions[bayesian-optimization]" "tabpfn>=8.1.0" "tqdm>=4.63.0,<=4.67.3" matplotlib
 ```
@@ -148,7 +141,7 @@ for step in trange(N_BO_STEPS, desc="BO steps"):
         f"best so far f={train_y.max().item():7.4f}"
     )
 
-print(f"\nBest found by TabPFN-BO: {train_y.max().item():.4f}")
+print(f"\nBest found by TabPFN with Bayesian Optimization: {train_y.max().item():.4f}")
 print(f"(optimum: {objective.optimal_value:.4f})")
 ```
 
@@ -162,27 +155,55 @@ random_best = torch.cummax(random_y, dim=0).values.cpu()
 bo_best = torch.tensor(best_history)
 
 print(f"Best found by random search: {random_y.max().item():.4f}")
-print(f"Best found by TabPFN-BO:   {train_y.max().item():.4f}")
+print(f"Best found by TabPFN:   {train_y.max().item():.4f}")
 print(f"Optimum:                   {objective.optimal_value:.4f}")
 ```
 
 ```console
-Best found by random search: 1.3674
-Best found by TabPFN-BO:   2.3253
+Best found by random search: 1.2780
+Best found by TabPFN:   3.0235
 Optimum:                   3.3224
 ```
 
 ```python
-fig, ax = plt.subplots(figsize=(8, 4.5))
-ax.plot(range(len(bo_best)), bo_best, marker="o", label="TabPFN-BO")
-ax.plot(range(1, len(random_best) + 1), random_best, marker="o", label="Random search")
-ax.axhline(objective.optimal_value, linestyle="--", color="black", linewidth=1, label="Hartmann optimum")
-ax.set_xlabel("Number of evaluations")
-ax.set_ylabel("Best objective value so far")
-ax.set_title("TabPFN Bayesian optimization vs random search")
-ax.legend()
-ax.grid(alpha=0.25)
-plt.tight_layout()
+fig, ax = plt.subplots(figsize=(7.2, 4.2), facecolor="#fcfcfb")
+ax.set_facecolor("#fcfcfb")
+ax.set_yscale("log")
+
+gap_floor = 1e-3
+optimum = float(objective.optimal_value)
+# Align BO history (starts after init) and random (full budget) onto evaluation counts.
+bo_evals = list(range(N_INIT, N_INIT + len(bo_best)))
+random_evals = list(range(1, len(random_best) + 1))
+bo_gap = [max(optimum - float(v), gap_floor) for v in bo_best]
+random_gap = [max(optimum - float(v), gap_floor) for v in random_best]
+
+ax.plot(bo_evals, bo_gap, color="#2a78d6", lw=2, label="TabPFN with Bayesian Optimization")
+ax.plot(random_evals, random_gap, color="#1baf7a", lw=2, label="Random search")
+ax.axvline(N_INIT, color="#898781", lw=1, ls=(0, (2, 3)))
+
+ax.set_title("Hartmann-6", fontsize=11, color="#0b0b0b", loc="left", fontweight="bold", pad=8)
+ax.grid(visible=True, axis="y", color="#e1e0d9", linewidth=0.6)
+ax.set_axisbelow(True)
+for side in ("top", "right"):
+    ax.spines[side].set_visible(False)
+for side in ("left", "bottom"):
+    ax.spines[side].set_color("#c3c2b7")
+ax.tick_params(colors="#898781", labelsize=8, length=3)
+ax.set_xlim(1, N_INIT + N_BO_STEPS)
+ax.set_xlabel("evaluation", fontsize=9, color="#52514e")
+ax.set_ylabel("gap to optimum (log)", fontsize=9, color="#52514e")
+ax.legend(frameon=False, fontsize=9.5, labelcolor="#0b0b0b")
+
+fig.suptitle(
+    "Best-so-far gap to optimum   (dotted line: end of random init)",
+    fontsize=11,
+    color="#0b0b0b",
+    x=0.02,
+    ha="left",
+    y=1.02,
+)
+fig.tight_layout()
 plt.show()
 ```
 
@@ -190,7 +211,7 @@ plt.show()
 
 ## Takeaways
 
-- `tabpfn-extensions` already provides the BO loop primitive: `propose_next_point()`.
+- `tabpfn-extensions` already provides the Bayesian Optimization loop primitive: `propose_next_point()`
 - You need the **full** `tabpfn` package plus `tabpfn-extensions[bayesian_optimization]`; `tabpfn-client` is not enough here because the candidate refinement path needs differentiable local inference.
-- On Hartmann-6, TabPFN-BO should usually beat random search under the same evaluation budget.
+- On Hartmann-6, TabPFN with Bayesian Optimization should usually beat random search under the same evaluation budget.
 - For more background, start with the upstream [example](https://github.com/PriorLabs/tabpfn-extensions/blob/main/examples/bayesian_optimization/bayesian_optimization.py) and the [`tabpfn-extensions` repo](https://github.com/PriorLabs/tabpfn-extensions).
