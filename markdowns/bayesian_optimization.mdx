@@ -3,7 +3,7 @@ title: Bayesian Optimization with TabPFN Extensions
 description: Use TabPFN as a Bayesian optimization surrogate via tabpfn-extensions
   and compare it against random search on Hartmann-6.
 cookbookTags:
-- extensions
+- extension
 - optimization
 authors:
 - name: Prior Labs
@@ -56,12 +56,7 @@ Install notes:
 - Pin `tqdm` if `tabpfn-client` is also present in the environment.
 
 ```python
-!pip install "tabpfn-extensions[bayesian-optimization] @ git+https://github.com/PriorLabs/tabpfn-extensions.git"
-```
-
-```python
-# bayesian_optimization extra is on GitHub main, not yet on the PyPI 0.4.x wheels.
-!pip install -q -U "tabpfn>=8.1.0" "tqdm>=4.63.0,<=4.67.3" matplotlib
+!pip install -q -U "tabpfn-extensions[bayesian-optimization]" "tabpfn>=8.1.0" "tqdm>=4.63.0,<=4.67.3" matplotlib
 ```
 
 *TabPFN as the surrogate, BoTorch for the benchmark objective, and Matplotlib for a quick comparison plot.*
