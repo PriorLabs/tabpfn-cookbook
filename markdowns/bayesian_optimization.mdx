@@ -263,7 +263,5 @@ plt.show()
 ## Takeaways
 
 - `tabpfn-extensions` already provides the Bayesian Optimization loop primitive: `propose_next_point()`
-- You need the **full** `tabpfn` package plus `tabpfn-extensions[bayesian_optimization]`; `tabpfn-client` is not enough here because the candidate refinement path needs differentiable local inference.
-- Report **repeats, not a single run**. One trace is dominated by its random init; 5 repeats with a shared init per repeat make the comparison readable, and the min–max band shows how much of the gap is real.
 - On Rosenbrock-4, TabPFN with Bayesian Optimization should close the gap to the optimum faster than random search under the same evaluation budget.
 - For more background, start with the upstream [example](https://github.com/PriorLabs/tabpfn-extensions/blob/main/examples/bayesian_optimization/bayesian_optimization.py) and the [`tabpfn-extensions` repo](https://github.com/PriorLabs/tabpfn-extensions).
