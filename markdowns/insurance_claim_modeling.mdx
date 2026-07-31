@@ -44,20 +44,22 @@ binning, one-hot encoding, log-scaling, and choosing link functions and a Tweedi
 forward pass with **no per-dataset training and no preprocessing**, you hand it the raw dataframe
 (mixed numeric and string columns, missing values and all). This notebook puts TabPFN head-to-head
 with matching scikit-learn GLM baselines on the standard French Motor Third-Party Liability
-(freMTPL2) dataset. For both the GLM and TabPFN we run the two classic recipes, a **single-stage**
-direct model and the **two-stage** frequency × severity (occurrence × severity) decomposition, so
-every comparison is like-for-like.
+(freMTPL2) dataset. For both the GLM and TabPFN we run a **single-stage** direct model and a
+**two-stage** decomposition. The GLM uses the classic frequency × per-claim severity recipe;
+TabPFN uses its natural hurdle-model analogue, occurrence × conditional aggregate cost. Both target
+the same quantity: expected annual claim cost.
 
 **Bottom line up front:**
 
 - **Better risk ranking, zero feature engineering.** Straight from the 9-column raw dataframe, TabPFN
   reaches an exposure-weighted **Gini of ~0.32 vs ~0.31** for the best hand-built GLM, better
   separation of safe from risky policies, which is what drives pricing.
-- **Per-policy uncertainty for free.** TabPFN returns a full predictive distribution per policy, so
-  you can read the expected claim *and* the tail ("how bad could this one get?"), the GLM gives you
-  only a fitted mean.
-- **Calibration on par, with one optional line.** With a single portfolio-level rescale — the same balancing a log-link GLM does implicitly —
-  TabPFN matches the GLM on calibration while leaving the ranking untouched.
+- **A rich conditional cost distribution per policy.** Given that a claim occurs, TabPFN returns the
+  expected cost and any quantile, with a shape that adapts per policy, handy for understanding the
+  severity tail.
+- **Calibration on par, with one optional adjustment.** A single portfolio-level rescale,
+  estimated on held-out training data, brings TabPFN's Tweedie deviance close to the GLMs while
+  leaving its stronger ranking untouched.
 
 We score with the metrics actuaries actually use: the **exposure-weighted Gini** (ranking / lift) and
 **Tweedie deviance / D²** (calibration, the standard loss for zero-inflated cost; both are
@@ -380,6 +382,13 @@ pp_single_vanilla = reg_single.predict(X_te_unit)   # plain mean point-estimate
 scores(pp_single_vanilla)
 ```
 
+```console
+{'Gini (exposure)  up': 0.30680240684438265,
+ 'D2 (Tweedie 1.9)  up': -2175.0647170406223,
+ 'Tweedie dev 1.9  down': 74747.97597409683,
+ 'Tweedie dev 1.5  down': 692.3590850256587}
+```
+
 The ranking is already competitive, the Gini lands in the same range as the two stage GLM, but the
 calibration is off: the Tweedie deviance is enormous and D² is deeply negative. TabPFN's
 default target handling is not built for a target that is 96% zeros with a heavy tail on the rest.
@@ -407,15 +416,16 @@ scores(pp_tabpfn_single)
 
 Results show that the ranking quality stays intact, while we severely improve the calibration quality.
 
-### Two-stage TabPFN: occurrence × severity
+### Two-stage TabPFN: occurrence × conditional aggregate cost
 
-The actuarial decomposition, with no Poisson/Gamma machinery, just two TabPFN models:
+A hurdle-model analogue of the actuarial decomposition, with no Poisson/Gamma machinery, just two
+TabPFN models:
 
 - **Stage 1 — occurrence:** a `TabPFNClassifier` for `P(claim > 0)`.
-- **Stage 2 — severity:** a `TabPFNRegressor` for `E[ClaimAmount | claim > 0]`, trained on claim rows
-  only.
+- **Stage 2 — conditional cost:** a `TabPFNRegressor` for
+  `E[ClaimAmount | claim > 0]`, trained on positive-loss policy rows only.
 
-Expected cost is `P(claim) × severity`. Both stages are queried at `Exposure = 1.0`, so the product
+Expected cost is `P(claim) × conditional cost`. Both stages are queried at `Exposure = 1.0`, so the product
 is already the pure premium. We use each stage's **mean** here; the next section pulls stage 2's full
 predictive distribution for a handful of example policies.
 
@@ -427,7 +437,7 @@ p_claim = clf.predict_proba(X_te_unit)[:, list(clf.classes_).index(1)]
 ```
 
 ```python
-# Stage 2: severity  E[ClaimAmount | claim > 0], trained on claim rows only.
+# Stage 2: conditional cost  E[ClaimAmount | claim > 0], trained on claim rows only.
 pos = (df_train["ClaimAmount"] > 0).values
 reg_sev = TabPFNRegressor(
     n_estimators=N_ESTIMATORS, ignore_pretraining_limits=True,
@@ -447,21 +457,22 @@ scores(pp_tabpfn)
  'Tweedie dev 1.5  down': 82.20730113027466}
 ```
 
-We can now see that the two stage TabPFN solution clearly outperforms all other solutions in the important Gini metric.
+The two-stage TabPFN solution achieves the strongest Gini in this held-out experiment.
 
-## Per-policy uncertainty: the whole distribution, not just a number
+## Per-policy uncertainty: the conditional cost distribution
 
-A GLM's severity model hands you one number per policy — the fitted mean. TabPFN's severity model
-returns a **full predictive distribution**: for each policy we can read the expected claim *and* any
-quantile of how large it might be. In insurance that tail is not a nice-to-have — the 90th- or
-99th-percentile claim is what drives risk loading, capital and reinsurance.
+Conditional on a positive claim amount, both models give a
+*distribution* per policy. The difference
+is shape: a standard Gamma uses one
+dispersion φ for the whole portfolio, so every policy gets the same coefficient of variation and skew
+and its quantiles are just the mean rescaled. TabPFN's distribution can change shape from policy to
+policy, and reading it off costs nothing extra, `output_type="full"` returns the mean plus any
+quantile.
 
-We only need this for a few illustrative policies, so we ask stage 2 for the full output
-(`output_type="full"`) on a small subset. (The hosted client caps full regression output at a few
-hundred rows per call — plenty here, since we just want a spread of examples across the risk range.)
+We pull the full output for a spread of example policies.
 
 ```python
-# Pick a spread of example policies across the predicted-severity range, then request the
+# Pick a spread of example policies across the predicted conditional-cost range, then request the
 # FULL predictive distribution for just those (the client caps full output at a few hundred rows).
 order = np.argsort(sev_mean)
 sel = order[np.linspace(0, len(order) - 1, 80).astype(int)]
@@ -471,13 +482,18 @@ dist = reg_sev.predict(X_te_unit.iloc[sel], output_type="full",
 np.asarray(dist["quantiles"]).shape   # (6 quantiles, len(sel) policies)
 ```
 
-The chart below plots those policies ordered safest → riskiest by predicted severity. The two lines
-are the **mean** TabPFN would price on (red, dashed) and the **median** claim (dark); the shaded fan
+```console
+(6, 80)
+```
+
+The chart below plots those policies ordered from lower → higher predicted conditional cost. The two
+lines are the **conditional mean** used as the severity component of the price (red, dashed) and the
+**conditional median** (dark); the shaded fan
 is the predictive interval — the inner band the 25th–75th percentile (the typical range), the outer
-the 10th–99th (reaching into the tail). Two things to read off it: the fan **widens toward the risky
-end** (TabPFN is telling you the outcome there is *less certain*, not just larger), and the dashed
-mean **rides above the median** — that gap is the heavy tail at work. Pricing on the mean already
-carries the cost of rare large claims, which is exactly what a median- or mean-only summary hides.
+the 10th–99th (reaching into the tail). The fan reaches higher amounts as predicted conditional cost
+increases, and the dashed mean **rides above the median** — that gap is the heavy tail at work. Using
+the conditional mean in `P(claim) × conditional cost` carries the cost of rare large claims, which a
+median-only summary would miss.
 
 ```python
 q = np.asarray(dist["quantiles"])                       # (6, len(sel)) quantiles
@@ -489,14 +505,14 @@ fig, ax = plt.subplots(figsize=(9, 4.4))
 ax.fill_between(x, p10, p99, color="#4f81bd", alpha=0.15, lw=0, label="10th-99th percentile")
 ax.fill_between(x, p25, p75, color="#4f81bd", alpha=0.35, lw=0, label="25th-75th percentile")
 ax.plot(x, median, color="#1f3b63", lw=2, label="median")
-ax.plot(x, mean, color="#c0504d", lw=1.8, ls="--", label="mean (the price)")
+ax.plot(x, mean, color="#c0504d", lw=1.8, ls="--", label="conditional mean (pricing component)")
 
 ax.set_yscale("log")
 ax.margins(x=0)
 ax.set_xticks([])
-ax.set_xlabel("example policies, ordered safest to riskiest by predicted severity")
+ax.set_xlabel("example policies, ordered by predicted conditional cost (low to high)")
 ax.set_ylabel("claim amount given a claim")
-ax.set_title("TabPFN predicts a full severity distribution per policy, not just a mean")
+ax.set_title("TabPFN predicts a full conditional cost distribution per policy, not just a mean")
 ax.grid(axis="y", ls=":", alpha=0.4)
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
@@ -505,37 +521,19 @@ plt.tight_layout()
 plt.show()
 ```
 
-The same idea as a table: for a few of those policies, the mean claim you would *price* on versus the
-90th-percentile claim you would *reserve capital* for. TabPFN gives you both from a single `.predict`;
-the GLM's Gamma gives you only the first.
-
-```python
-ex = [1, len(sel) // 2, len(sel) - 2]        # positions within the example subset
-pd.DataFrame({
-    "DrivAge": df_test["DrivAge"].to_numpy()[sel][ex],
-    "VehPower": df_test["VehPower"].to_numpy()[sel][ex],
-    "mean claim (price)": mean[ex].round(0),
-    "P90 claim (tail)": p90[ex].round(0),
-}, index=[f"policy {i + 1}" for i in range(len(ex))])
-```
-
-```console
-          DrivAge  VehPower  mean claim (price)  P90 claim (tail)
-policy 1       45        10              1393.0            1488.0
-policy 2       25         6              1639.0            1586.0
-policy 3       39         6              1897.0            2410.0
-```
+![Per-policy uncertainty: the conditional cost distribution](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/insurance_claim_modeling/plot-02.png)
 
 ## Optional: matching the GLM on calibration
 
 The two-stage TabPFN *ranks* well but **under-prices the portfolio**: summed over the test set it
-charges only ~60% of the actual claim cost. A log-link GLM never has this problem, fitting an intercept automatically
-balances its predicted total against the observed total on the training data.
+charges only ~60% of the actual claim cost. The actuarial GLMs handle the portfolio level more
+naturally through their exposure-weighted likelihood and fitted intercept, although their balance
+can still depend on the model and regularization.
 
-We can give TabPFN the same single degree of freedom: one **constant factor** = actual claim cost ÷
+We can give TabPFN one matching degree of freedom: a **constant factor** = actual claim cost ÷
 predicted cost, estimated on a calibration slice held out of training (never the test set). Because it
-is a constant, `c · (p × s)` orders policies exactly like `p × s` — so it fixes the *level* without
-moving the *ranking* one bit.
+is a constant, `c · (p × s)` orders policies exactly like `p × s` — so it adjusts the portfolio
+*level* without moving the *ranking* one bit.
 
 One TabPFN-specific catch: TabPFN predicts by conditioning on its training rows *in-context*, so it
 effectively memorizes them — a policy it saw at fit time gets an unrealistically good prediction.
@@ -587,8 +585,9 @@ portfolio balance (predicted / actual): 0.584 -> 0.956
 The rescale is easiest to see decile by decile: bin the test policies by predicted premium and plot
 the predicted premium (x) against the actual claim cost (y) in each bin. **Before**, the two-stage
 points sit consistently *above* the diagonal — actual cost exceeds what the model charged, i.e.
-under-pricing; **after** the single constant factor they land on it. The GLM is drawn faintly in both
-panels for reference, and the ranking is identical between them — only the level moves.
+under-pricing; **after** the single constant factor they move substantially closer to it, although
+some decile-level miscalibration remains. The GLM is drawn faintly in both panels for reference, and
+the ranking is identical between them — only the level moves.
 
 ```python
 from matplotlib.ticker import ScalarFormatter, NullFormatter, LogLocator
@@ -634,7 +633,7 @@ plt.tight_layout()
 plt.show()
 ```
 
-![Optional: matching the GLM on calibration](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/insurance_claim_modeling/plot-02.png)
+![Optional: matching the GLM on calibration](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/insurance_claim_modeling/plot-03.png)
 
 ## Results
 
@@ -714,7 +713,7 @@ plt.tight_layout()
 plt.show()
 ```
 
-![Results](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/insurance_claim_modeling/plot-03.png)
+![Results](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/insurance_claim_modeling/plot-04.png)
 
 ## Takeaways
 
@@ -722,15 +721,15 @@ plt.show()
   `.fit()` / `.predict()` — TabPFN reaches Gini ~0.32 vs ~0.31 for the best GLM. The GLM needed a
   hand-built 75-column design matrix (binning, one-hot, log-scaling) and several modeling choices to
   get there.
-- **Uncertainty comes built in.** TabPFN returns a full predictive distribution per policy, so you
-  read off the expected claim *and* its tail (the P90 "bad case") directly — exactly what risk loading
-  and capital planning need. The GLM gives a mean and stops.
-- **Calibration is a one-liner away.** Out of the box TabPFN under-prices the portfolio (it has no
-  exposure offset, a genuine convenience the GLMs keep). A single portfolio-level factor — the same
-  balancing a log-link GLM performs implicitly — restores the level (balance ~0.6 → ~0.96) and brings
-  the Tweedie deviance in line with the GLMs, while provably leaving the ranking untouched.
-- **The two-stage split helps TabPFN too.** Occurrence × severity is better calibrated than a single
-  regressor on the raw zero-inflated amount — the classic actuarial decomposition still pays off.
+- **A rich conditional cost distribution per policy.** Given a positive claim amount, TabPFN gives
+  the conditional mean and quantiles with a shape that varies per policy; the Gamma benchmark has a
+  constant-CV distribution.
+- **Calibration is a simple adjustment away.** Out of the box TabPFN under-prices the portfolio. A
+  single factor estimated on held-out training data improves the balance from ~0.6 to ~0.96 and
+  brings Tweedie deviance close to the GLMs, while provably leaving the ranking untouched.
+- **The two-stage split helps TabPFN too.** Occurrence × conditional aggregate cost is better
+  calibrated than a single regressor on the raw zero-inflated amount — the actuarial intuition still
+  pays off.
 - **Match the metric to the question.** Judge *ranking* with the exposure-weighted Gini (the headline
   for pricing) and *calibration* with Tweedie deviance / D² and the decile chart. MAE and RMSE are
   actively misleading on a 96%-zero, heavy-tailed target.
