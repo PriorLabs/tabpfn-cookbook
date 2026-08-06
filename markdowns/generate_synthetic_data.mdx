@@ -160,7 +160,7 @@ synthetic.head()
 [5 rows x 30 columns]
 ```
 
-![Generating the Synthetic Table](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/generate_synthetic_data/plot-01.png)
+![Generating the Synthetic Table](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/generate_synthetic_data/visuals/generate_synthetic_data/plot-01.png)
 
 ## Comparing Real vs. Synthetic
 
@@ -187,7 +187,7 @@ The per-feature histograms show how closely each synthetic column tracks the rea
 table_evaluator.plot_distributions()
 ```
 
-![Distributions](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/generate_synthetic_data/plot-02.png)
+![Distributions](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/generate_synthetic_data/visuals/generate_synthetic_data/plot-02.png)
 
 ### Correlations
 
@@ -199,7 +199,7 @@ TabPFN samples each column conditional on the others, so we care about more than
 table_evaluator.plot_correlation_difference()
 ```
 
-![Correlations](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/generate_synthetic_data/plot-03.png)
+![Correlations](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/generate_synthetic_data/visuals/generate_synthetic_data/plot-03.png)
 
 ### PCA Projection
 
@@ -211,7 +211,7 @@ Projecting real and synthetic rows onto the first two principal components gives
 table_evaluator.plot_pca()
 ```
 
-![PCA Projection](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/generate_synthetic_data/plot-04.png)
+![PCA Projection](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/generate_synthetic_data/visuals/generate_synthetic_data/plot-04.png)
 
 ## When to Use This
 
