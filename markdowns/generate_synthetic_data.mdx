@@ -45,7 +45,7 @@ In this notebook we take an existing dataset (scikit-learn's Breast Cancer table
 The unsupervised synthetic-data helpers live in `tabpfn_extensions`, and `table-evaluator` provides the visual fidelity checks we use at the end.
 
 ```python
-!pip install -U tabpfn tabpfn_extensions "table-evaluator>=1.9" "dython>=0.7" scikit-learn "seaborn>=0.13"
+!pip install -U tabpfn tabpfn-client tabpfn_extensions "table-evaluator>=1.9" "dython>=0.7" scikit-learn "seaborn>=0.13"
 ```
 
 ## Imports and Data
@@ -59,6 +59,7 @@ import os
 
 import pandas as pd
 import torch
+#from google.colab import userdata
 from sklearn.datasets import load_breast_cancer
 from sklearn.model_selection import train_test_split
 
