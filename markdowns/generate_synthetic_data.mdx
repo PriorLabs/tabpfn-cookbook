@@ -38,6 +38,12 @@ Common tools include scikit-learn's [`make_*`](https://scikit-learn.org/stable/d
 
 In this notebook we take an existing dataset (scikit-learn's Breast Cancer table) as the source, fit TabPFN's unsupervised model on it, and sample new rows that share its column distributions and correlations. The result is a standalone synthetic table that can stand in for the real one (for a demo, a test fixture, or to extend the training set) which we then compare against the original with [`table-evaluator`](https://github.com/Baukebrenninkmeijer/Table-Evaluator).
 
+You can use this approach to:
+
+- Realistic demo data to share with customers or collaborators without exposing real records.
+- QA and pipeline tests with plausible rows before going live on real data.
+- Fast prototyping when access to the real dataset is restricted.
+
 ## Setup
 
 *Installing TabPFN, its extensions, and `table-evaluator`.*
@@ -55,11 +61,9 @@ The unsupervised synthetic-data helpers live in `tabpfn_extensions`, and `table-
 We use scikit-learn's Breast Cancer dataset, a classic, non-sensitive table that stands in for whatever proprietary data you would like to synthesise. We keep a train/test split so the synthetic table can later be compared against real data the model never saw.
 
 ```python
-import os
-
 import pandas as pd
 import torch
-#from google.colab import userdata
+from google.colab import userdata
 from sklearn.datasets import load_breast_cancer
 from sklearn.model_selection import train_test_split
 
@@ -212,19 +216,3 @@ table_evaluator.plot_pca()
 ```
 
 ![PCA Projection](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/generate_synthetic_data/plot-04.png)
-
-## When to Use This
-
-*Where TabPFN-synthesised tables shine, and where they don't.*
-
-The approach is lightweight, with no GAN training loop and no simulation environment, which makes it a good fit for:
-
-- Realistic demo data to share with customers or collaborators without exposing real records.
-- QA and pipeline tests with plausible rows before going live on real data.
-- Fast prototyping when access to the real dataset is restricted.
-
-A few caveats worth keeping in mind:
-
-- Synthetic is not the same as anonymised. Privacy is improved but not guaranteed. For anything compliance-critical, add explicit checks like nearest-neighbour distance or re-identification-risk analysis.
-- Very small source tables tend to give low-fidelity synthetic tables.
-- TabPFN synthetic data is best positioned for demos, prototyping, and testing rather than as a drop-in replacement for regulated data releases.
