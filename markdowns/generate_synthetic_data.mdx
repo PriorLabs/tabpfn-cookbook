@@ -1,0 +1,218 @@
+---
+title: Generate Synthetic Data Using Real Data with TabPFN
+description: Sample new rows that mirror the statistics of an existing table
+icon: plus
+cookbookTags:
+- extensions
+authors:
+- name: Kürşat Kaya
+  linkedin: https://www.linkedin.com/in/kursatkaya
+  github: https://github.com/kursatfelsen
+colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/generate_synthetic_data.ipynb
+---
+{/* cookbook-meta:start process_markdown.py */}
+<div className="cookbook-meta">
+{/* cookbook-authors:start process_markdown.py */}
+<div className="cookbook-authors">
+  <div className="cookbook-author-bar">
+    <span className="cookbook-author-by">By</span>
+    <span className="cookbook-author-list"><span className="cookbook-author-entry"><span className="cookbook-author-name">Kürşat Kaya</span><span className="cookbook-author-links"><a href="https://github.com/kursatfelsen" className="cookbook-author-icon-link" aria-label="GitHub" target="_blank" rel="noopener noreferrer"><svg className="cookbook-author-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.374 0 0 5.373 0 12c0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg></a><a href="https://www.linkedin.com/in/kursatkaya" className="cookbook-author-icon-link" aria-label="LinkedIn" target="_blank" rel="noopener noreferrer"><svg className="cookbook-author-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 1 1 0-4.124 2.062 2.062 0 0 1 0 4.124zM7.119 20.452H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg></a></span></span></span>
+  </div>
+</div>
+{/* cookbook-authors:end process_markdown.py */}
+{/* cookbook-colab:start process_markdown.py */}
+<div className="cookbook-colab">
+  <a href="https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/generate_synthetic_data.ipynb" className="cookbook-colab-button" target="_blank" rel="noopener noreferrer">
+    <svg className="cookbook-colab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="#F9AB00" d="M16.9414 4.9757a7.033 7.033 0 0 0-4.9308 2.0646 7.033 7.033 0 0 0-.1232 9.8068l2.395-2.395a3.6455 3.6455 0 0 1 5.1497-5.1478l2.397-2.3989a7.033 7.033 0 0 0-4.8877-1.9297zM7.07 4.9855a7.033 7.033 0 0 0-4.8878 1.9316l2.3911 2.3911a3.6434 3.6434 0 0 1 5.0227.1271l1.7341-2.9737-.0997-.0802A7.033 7.033 0 0 0 7.07 4.9855zm15.0093 2.1721l-2.3892 2.3911a3.6455 3.6455 0 0 1-5.1497 5.1497l-2.4067 2.4068a7.0362 7.0362 0 0 0 9.9456-9.9476zM1.932 7.1674a7.033 7.033 0 0 0-.002 9.6816l2.397-2.397a3.6434 3.6434 0 0 1-.004-4.8916zm7.664 7.4235c-1.38 1.3816-3.5863 1.411-5.0168.1134l-2.397 2.395c2.4693 2.3328 6.263 2.5753 9.0072.5455l.1368-.1115z"/></svg>
+    <span className="cookbook-colab-label">Open in Colab</span>
+  </a>
+</div>
+{/* cookbook-colab:end process_markdown.py */}
+</div>
+{/* cookbook-meta:end process_markdown.py */}
+*Given a real table, sample new rows that follow the same statistical patterns.*
+
+Tabular data is everywhere: spreadsheets, customer records, financial logs, medical registries. Yet getting a usable table for a demo or prototype is often blocked by privacy concerns and regulations. Synthetic data works around that: artificial rows that preserve the statistical patterns of the real table without exposing individual records.
+
+Common tools include scikit-learn's [`make_*`](https://scikit-learn.org/stable/datasets/sample_generators.html) functions, [`Faker`](https://faker.readthedocs.io/) for rule-based generation, and GAN-based methods like [CTGAN](https://github.com/sdv-dev/CTGAN) or [TabGAN](https://github.com/Diyago/Tabular-data-generation). These are powerful but often complex to set up. TabPFN is a foundation model specialised for tabular data, and its unsupervised tools let us generate a look-alike table without training a GAN or building a simulation.
+
+In this notebook we take an existing dataset (scikit-learn's Breast Cancer table) as the source, fit TabPFN's unsupervised model on it, and sample new rows that share its column distributions and correlations. The result is a standalone synthetic table that can stand in for the real one (for a demo, a test fixture, or to extend the training set) which we then compare against the original with [`table-evaluator`](https://github.com/Baukebrenninkmeijer/Table-Evaluator).
+
+You can use this approach to:
+
+- Realistic demo data to share with customers or collaborators without exposing real records.
+- QA and pipeline tests with plausible rows before going live on real data.
+- Fast prototyping when access to the real dataset is restricted.
+
+## Setup
+
+*Installing TabPFN, its extensions, and `table-evaluator`.*
+
+The unsupervised synthetic-data helpers live in `tabpfn_extensions`, and `table-evaluator` provides the visual fidelity checks we use at the end.
+
+```python
+!pip install -U tabpfn tabpfn-client tabpfn_extensions "table-evaluator>=1.9" "dython>=0.7" scikit-learn "seaborn>=0.13"
+```
+
+## Imports and Data
+
+*Loading the Breast Cancer dataset as our safe, realistic table.*
+
+We use scikit-learn's Breast Cancer dataset, a classic, non-sensitive table that stands in for whatever proprietary data you would like to synthesise. We keep a train/test split so the synthetic table can later be compared against real data the model never saw.
+
+```python
+import pandas as pd
+import torch
+from google.colab import userdata
+from sklearn.datasets import load_breast_cancer
+from sklearn.model_selection import train_test_split
+
+from tabpfn_extensions import TabPFNClassifier, TabPFNRegressor
+from tabpfn_extensions.unsupervised import TabPFNUnsupervisedModel
+from tabpfn_extensions.unsupervised.experiments import GenerateSyntheticDataExperiment
+
+data = load_breast_cancer()
+X, y = data["data"], data["target"]
+feature_names = data["feature_names"]
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.33, random_state=42
+)
+```
+
+```python
+from tabpfn_client import set_access_token
+set_access_token(userdata.get('TABPFN_TOKEN'))
+```
+
+## Building the Unsupervised Model
+
+*Wrapping a classifier and a regressor into `TabPFNUnsupervisedModel`.*
+
+The synthetic-data experiment expects a `TabPFNUnsupervisedModel`, which pairs a `TabPFNClassifier` (for discrete columns) with a `TabPFNRegressor` (for continuous columns). Together they let TabPFN model each column conditional on the others and sample new rows from that joint distribution.
+
+```python
+model_unsupervised = TabPFNUnsupervisedModel(
+    tabpfn_clf=TabPFNClassifier(n_estimators=3),
+    tabpfn_reg=TabPFNRegressor(n_estimators=3),
+)
+```
+
+## Generating the Synthetic Table
+
+*Running the experiment to produce look-alike rows.*
+
+`GenerateSyntheticDataExperiment` handles the sampling loop. `temp` controls diversity: higher values give more varied rows, lower values stay closer to the training data. `n_samples` sets how many rows we want out. Here we ask for twice as many rows as the training split, over all 30 features. Inputs come in as tensors, and the resulting synthetic table is written to `synthetic.csv` for the evaluation step.
+
+```python
+X_tensor = torch.tensor(X_train, dtype=torch.float32)
+y_tensor = torch.tensor(y_train)
+
+experiment = GenerateSyntheticDataExperiment(task_type="unsupervised")
+
+experiment.run(
+    tabpfn=model_unsupervised,
+    X=X_tensor,
+    y=y_tensor,
+    attribute_names=feature_names,
+    temp=1.0,  # temperature controls sample diversity
+    n_samples=X_train.shape[0] * 2,  # 2x more rows than the original train split
+    indices=list(range(X_tensor.shape[1])),
+)
+
+synthetic = experiment.data_synthetic.drop(columns=["real_or_synthetic"], errors="ignore")
+synthetic.to_csv("synthetic.csv", index=False)
+synthetic.head()
+```
+
+```console
+   mean radius  mean texture  mean perimeter   mean area  mean smoothness  \
+0    13.363407     16.441288       85.516998  553.198303         0.082179
+1    12.619973     15.794920       81.974686  483.532196         0.087885
+2    15.422915     14.619908      100.734337  719.590454         0.113079
+3    12.546910     16.986845       80.002007  489.896667         0.072575
+4    11.738303     16.127644       75.250076  426.929626         0.101015
+
+   mean compactness  mean concavity  mean concave points  mean symmetry  \
+0          0.061605        0.066697             0.040980       0.151968
+1          0.111782        0.053319             0.030360       0.163469
+2          0.133238        0.129874             0.071804       0.187609
+3          0.046438        0.023193             0.014958       0.141472
+4          0.066207        0.025876             0.025950       0.181918
+
+   mean fractal dimension  ...  worst radius  worst texture  worst perimeter  \
+0                0.056566  ...     14.807053      20.372873        94.949722
+1                0.066643  ...     13.648538      19.480104        89.532341
+2                0.066193  ...     18.021919      19.117395       119.698105
+3                0.056971  ...     13.958496      22.080626        88.770744
+4                0.062224  ...     12.666892      22.931154        81.368088
+
+   worst area  worst smoothness  worst compactness  worst concavity  \
+0  682.556335          0.115120           0.122154         0.240092
+1  577.266418          0.125912           0.325796         0.203869
+2  961.645325          0.169212           0.378812         0.442507
+3  603.202209          0.092452           0.143293         0.108836
+4  489.277863          0.137176           0.143374         0.092852
+
+   worst concave points  worst symmetry  worst fractal dimension
+0              0.096336        0.218800                 0.072447
+1              0.101295        0.241521                 0.103268
+2              0.173838        0.300495                 0.103944
+3              0.063029        0.264225                 0.074134
+4              0.079801        0.275973                 0.077098
+
+[5 rows x 30 columns]
+```
+
+![Generating the Synthetic Table](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/generate_synthetic_data/plot-01.png)
+
+## Comparing Real vs. Synthetic
+
+*Checking fidelity with `TableEvaluator`.*
+
+A synthetic table is only useful if it behaves like the real thing. `TableEvaluator` compares the two side by side and reports on distribution overlap, correlation structure, and low-dimensional geometry. We call the three plots we care about directly (distributions, correlation difference, PCA) instead of `visual_evaluation`, which produces a much larger figure grid.
+
+```python
+from table_evaluator import TableEvaluator
+
+real = pd.DataFrame(data.data, columns=data.feature_names)
+fake = pd.read_csv("synthetic.csv")
+
+table_evaluator = TableEvaluator(real, fake)
+```
+
+### Distributions
+
+*Do the synthetic columns look like the real ones?*
+
+The per-feature histograms show how closely each synthetic column tracks the real distribution. A close overlap means the marginals have been preserved.
+
+```python
+table_evaluator.plot_distributions()
+```
+
+![Distributions](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/generate_synthetic_data/plot-02.png)
+
+### Correlations
+
+*Are the relationships between features still there?*
+
+TabPFN samples each column conditional on the others, so we care about more than just marginals. The correlation-difference heatmap highlights where the synthetic table's feature-to-feature relationships depart from the real table. Small values mean the joint structure held up.
+
+```python
+table_evaluator.plot_correlation_difference()
+```
+
+![Correlations](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/generate_synthetic_data/plot-03.png)
+
+### PCA Projection
+
+*Do the two tables share the same low-dimensional geometry?*
+
+Projecting real and synthetic rows onto the first two principal components gives a quick visual check: overlapping clouds mean the synthetic rows live in the same subspace as the real ones.
+
+```python
+table_evaluator.plot_pca()
+```
+
+![PCA Projection](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/generate_synthetic_data/plot-04.png)
