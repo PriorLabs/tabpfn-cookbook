@@ -2,6 +2,12 @@ __pycache__/
 *.py[cod]
 .Python
 .venv/
+.venv-rel/
 venv/
 .env
 .DS_Store
+# Large third-party CSVs downloaded at runtime (Olist, etc.)
+data/
+# Task/schema YAML written by notebooks as they run
+assets/
+relarena-cache/

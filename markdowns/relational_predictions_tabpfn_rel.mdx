@@ -1,0 +1,636 @@
+---
+title: Predictions over Relational Data with TabPFN-Rel
+description: Get started with RelArena & TabPFN-Rel, a TabPFN Harness
+cookbookTags:
+- relational
+authors:
+- name: Prior Labs
+  linkedin: https://www.linkedin.com/company/prior-labs
+  twitter: https://twitter.com/prior_labs
+colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/relational_predictions_tabpfn_rel.ipynb
+---
+{/* cookbook-meta:start process_markdown.py */}
+<div className="cookbook-meta">
+{/* cookbook-authors:start process_markdown.py */}
+<div className="cookbook-authors">
+  <div className="cookbook-author-bar">
+    <span className="cookbook-author-by">By</span>
+    <span className="cookbook-author-list"><span className="cookbook-author-entry"><span className="cookbook-author-name">Prior Labs</span><span className="cookbook-author-links"><a href="https://www.linkedin.com/company/prior-labs" className="cookbook-author-icon-link" aria-label="LinkedIn" target="_blank" rel="noopener noreferrer"><svg className="cookbook-author-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 1 1 0-4.124 2.062 2.062 0 0 1 0 4.124zM7.119 20.452H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg></a><a href="https://twitter.com/prior_labs" className="cookbook-author-icon-link" aria-label="X" target="_blank" rel="noopener noreferrer"><svg className="cookbook-author-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></a></span></span></span>
+  </div>
+</div>
+{/* cookbook-authors:end process_markdown.py */}
+{/* cookbook-colab:start process_markdown.py */}
+<div className="cookbook-colab">
+  <a href="https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/relational_predictions_tabpfn_rel.ipynb" className="cookbook-colab-button" target="_blank" rel="noopener noreferrer">
+    <svg className="cookbook-colab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="#F9AB00" d="M16.9414 4.9757a7.033 7.033 0 0 0-4.9308 2.0646 7.033 7.033 0 0 0-.1232 9.8068l2.395-2.395a3.6455 3.6455 0 0 1 5.1497-5.1478l2.397-2.3989a7.033 7.033 0 0 0-4.8877-1.9297zM7.07 4.9855a7.033 7.033 0 0 0-4.8878 1.9316l2.3911 2.3911a3.6434 3.6434 0 0 1 5.0227.1271l1.7341-2.9737-.0997-.0802A7.033 7.033 0 0 0 7.07 4.9855zm15.0093 2.1721l-2.3892 2.3911a3.6455 3.6455 0 0 1-5.1497 5.1497l-2.4067 2.4068a7.0362 7.0362 0 0 0 9.9456-9.9476zM1.932 7.1674a7.033 7.033 0 0 0-.002 9.6816l2.397-2.397a3.6434 3.6434 0 0 1-.004-4.8916zm7.664 7.4235c-1.38 1.3816-3.5863 1.411-5.0168.1134l-2.397 2.395c2.4693 2.3328 6.263 2.5753 9.0072.5455l.1368-.1115z"/></svg>
+    <span className="cookbook-colab-label">Open in Colab</span>
+  </a>
+</div>
+{/* cookbook-colab:end process_markdown.py */}
+</div>
+{/* cookbook-meta:end process_markdown.py */}
+Most real data does not live in one table. A shop has *sellers*, *customers*,
+*orders*, *order items*, *products*, and *reviews*, wired together by foreign keys —
+and the interesting questions run *across* those tables and *forward in time*:
+**which of the sellers active today will stop selling in the next 30 days?**
+
+Nothing in that database answers it directly. There is no `churn` column, and no
+feature matrix. Supervised learning needs both, and normally that means weeks of
+bespoke joins and window aggregations.
+
+**TabPFN-Rel** lets you declare them instead. You write two small YAML files — one
+describing your tables, one asking your question as a SQL query — and the harness
+builds the labels, aggregates each entity's history across the foreign-key graph
+with Deep Feature Synthesis (DFS), keeps the future out of the features, and runs
+TabPFN on the result.
+
+This cookbook does that end to end on the raw [Olist Brazilian
+E-Commerce](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce) CSVs, in a
+few minutes on CPU.
+
+> 📃 Read the full report on RelArena, TabPFN-Rel and RPI [here](https://arxiv.org/abs/2608.16319)
+
+## The shape of the problem
+
+One idea does most of the work here: the **anchor time**. A prediction is always
+made *as of* some moment `t`. The model sees the database truncated at `t`, and the
+label comes from the window after it.
+
+```
+                          anchor time t
+   ──────────────────────────────┼──────────────────────────────▶  time
+     FEATURES                    │   LABEL
+     every row in every table    │   did this seller receive any order
+     with a timestamp <= t       │   in (t, t + 30 days] ?
+```
+
+That is what makes it a forecast rather than a lookup, and the harness enforces it —
+you cannot accidentally show the model a review written after `t`.
+
+Two consequences worth holding onto. First, there are **many anchors**: the same
+question is asked at 30-day intervals stepping back through history, so one seller
+contributes many training rows. Second, **the splits are cuts in time**, not random
+samples — you pick the two dates where train ends and test begins.
+
+RelArena follows the RelBench protocol for final prediction: `predict()` defaults
+to the task's `test_timestamp`, and the feature database remains frozen at that
+cutoff. Configuring a later `at_timestamp` changes the prediction anchor and emits
+a warning, but it does not expose database rows written after `test_timestamp`.
+
+## Setup
+
+RelArena—the package that ships TabPFN-Rel—is available as an alpha release
+on PyPI. The cell below installs it directly from the standard PyPI index.
+No GitHub token or local checkout is required.
+
+The `tabpfn-rel-api` extra is the no-GPU stack: featurization runs locally,
+while model fitting and prediction use the hosted TabPFN API.
+
+```python
+!pip install -q "relarena[tabpfn-rel-api]"
+!pip install -q kagglehub
+
+import importlib.metadata
+import importlib.util
+import os
+import sys
+
+IN_COLAB = importlib.util.find_spec("google.colab") is not None
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
+print(
+    f"Python {sys.version.split()[0]}, "
+    f"relarena {importlib.metadata.version('relarena')}"
+)
+
+if IN_COLAB and "pandas" in sys.modules:
+    if sys.modules["pandas"].__version__ != importlib.metadata.version("pandas"):
+        print(
+            "\n>>> Restart the session (Runtime > Restart session), then continue "
+            "from the next cell—do not re-run this one."
+        )
+```
+
+### The TabPFN token
+
+Because the fit runs on the hosted API, you need a Prior Labs token. Grab one from
+[ux.priorlabs.ai](https://ux.priorlabs.ai) and add it as the Colab secret
+`TABPFN_TOKEN` (You can add a secret via the key icon on the right sidebar). Locally you can skip this — `tabpfn-client` opens a browser on the
+first fit and caches the token.
+
+This cell runs before every other import because `tabpfn-client` reads the token
+once, at import time.
+
+```python
+if IN_COLAB and not os.environ.get("TABPFN_TOKEN"):
+    from google.colab import userdata
+
+    try:
+        os.environ["TABPFN_TOKEN"] = userdata.get("TABPFN_TOKEN")
+    except Exception:
+        pass  # fall through to the interactive browser login
+
+print(
+    "TabPFN token:",
+    "set" if os.environ.get("TABPFN_TOKEN") else "not set (login prompt on first fit)",
+)
+```
+
+```console
+TabPFN token: set
+```
+
+## The database
+
+Olist is a real Brazilian marketplace; the public dataset covers roughly 100k orders
+from 2016–2018 and downloads anonymously, no Kaggle account needed. Seven of its
+CSVs matter here, and the foreign keys between them are what TabPFN-Rel walks:
+
+```
+        product_category
+               ▲
+               │ product_category_name
+           products ◀────────┐
+                             │ product_id
+  customers ◀── orders ◀── order_items ──▶ sellers
+                   ▲            seller_id
+                   │ order_id
+             order_reviews
+```
+
+Read it from the right: a seller has many order items; each belongs to an order,
+which belongs to a customer and may have a review, and points at a product with a
+category. Those chains are the paths DFS aggregates along.
+
+```python
+from pathlib import Path
+
+import kagglehub
+import pandas as pd
+
+DATA_DIR = Path("data/olist")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+RAW_CSVS = [
+    "olist_sellers_dataset.csv",
+    "olist_customers_dataset.csv",
+    "product_category_name_translation.csv",
+    "olist_products_dataset.csv",
+    "olist_orders_dataset.csv",
+    "olist_order_items_dataset.csv",
+    "olist_order_reviews_dataset.csv",
+]
+
+if not all((DATA_DIR / name).is_file() for name in RAW_CSVS):
+    print("Downloading Olist from Kaggle...")
+    cache = Path(kagglehub.dataset_download("olistbr/brazilian-ecommerce"))
+    for name in RAW_CSVS:
+        (DATA_DIR / name).write_bytes((cache / name).read_bytes())
+
+for name in RAW_CSVS:
+    df = pd.read_csv(DATA_DIR / name)
+    print(f"{name:<45} {len(df):>7,} rows x {df.shape[1]:>2} cols")
+```
+
+```console
+Downloading Olist from Kaggle...
+Using Colab cache for faster access to the 'brazilian-ecommerce' dataset.
+olist_sellers_dataset.csv                       3,095 rows x  4 cols
+olist_customers_dataset.csv                    99,441 rows x  5 cols
+product_category_name_translation.csv              71 rows x  2 cols
+olist_products_dataset.csv                     32,951 rows x  9 cols
+olist_orders_dataset.csv                       99,441 rows x  8 cols
+olist_order_items_dataset.csv                 112,650 rows x  7 cols
+olist_order_reviews_dataset.csv                99,224 rows x  7 cols
+```
+
+### Giving `order_items` a real event time
+
+Event tables need a trustworthy timestamp, because that is the column the harness
+censors on. `orders` and `order_reviews` have one; `order_items` only has a shipping
+deadline. The cell below joins each item's purchase time on from its order.
+
+This is the only table that needs any code — everything else is read straight from
+the raw CSVs.
+
+```python
+orders = pd.read_csv(
+    DATA_DIR / "olist_orders_dataset.csv",
+    usecols=["order_id", "order_purchase_timestamp"],
+)
+order_items = pd.read_csv(DATA_DIR / "olist_order_items_dataset.csv").merge(
+    orders, on="order_id", how="left"
+).rename(columns={"order_purchase_timestamp": "purchase_ts"})
+
+order_items.to_csv(DATA_DIR / "order_items.csv", index=False)
+order_items.head(3)
+```
+
+```console
+                           order_id  order_item_id  \
+0  00010242fe8c5a6d1ba2dd792cb16214              1
+1  00018f77f2f0320c557190d7a144bdd3              1
+2  000229ec398224ef6ca0657da4fc703e              1
+
+                         product_id                         seller_id  \
+0  4244733e06e7ecb4970a6e2683c13e61  48436dade18ac8b2bce089ec2a041202
+1  e5f2d52b802189ee658865ca93d83a8f  dd7ddc04e1b6c2c614352b383efe2d36
+2  c777355d18b72b67abbeef9df44fd0fd  5b51032eddd242adc84c38acab88f23d
+
+   shipping_limit_date  price  freight_value          purchase_ts
+0  2017-09-19 09:45:35   58.9          13.29  2017-09-13 08:59:02
+1  2017-05-03 11:05:13  239.9          19.93  2017-04-26 10:53:06
+2  2018-01-18 14:48:30  199.0          17.87  2018-01-14 14:33:31
+```
+
+## The Database Schema
+
+Now the first YAML: where each table lives, what its key is, which column carries
+its event time, and which foreign keys point where. That is the graph DFS will walk.
+
+The one judgement call is `columns`, an allow-list of the fields that become
+features. `orders` carries delivery dates and a status that are only filled in
+*after* the purchase — keeping them would hand the model facts that do not exist at
+prediction time, so they are left out. Time censoring is automatic; deciding which
+columns were backfilled is on you.
+
+```python
+TASK_DIR = Path("assets/relational_predictions_tabpfn_rel")
+TASK_DIR.mkdir(parents=True, exist_ok=True)
+
+DATABASE_YAML = """# Olist Brazilian E-Commerce - curated schema for TabPFN-Rel
+sellers:
+  pkey: seller_id
+  path: olist_sellers_dataset.csv
+  columns: [seller_id, seller_city, seller_state]
+customers:
+  pkey: customer_id
+  path: olist_customers_dataset.csv
+  columns: [customer_id, customer_state, customer_city]
+product_category:
+  pkey: product_category_name
+  path: product_category_name_translation.csv
+products:
+  pkey: product_id
+  path: olist_products_dataset.csv
+  fkeys:
+    product_category_name: product_category
+  columns: [product_id, product_category_name, product_weight_g,
+            product_length_cm, product_height_cm, product_width_cm,
+            product_photos_qty]
+orders:
+  pkey: order_id
+  time_col: order_purchase_timestamp
+  path: olist_orders_dataset.csv
+  fkeys:
+    customer_id: customers
+  # Post-purchase columns (status, delivery dates) are deliberately excluded:
+  # they do not exist yet at prediction time.
+  columns: [order_id, customer_id, order_purchase_timestamp]
+order_items:
+  time_col: purchase_ts
+  path: order_items.csv
+  fkeys:
+    order_id: orders
+    product_id: products
+    seller_id: sellers
+  columns: [order_id, order_item_id, product_id, seller_id,
+            price, freight_value, purchase_ts]
+order_reviews:
+  time_col: review_answer_timestamp
+  path: olist_order_reviews_dataset.csv
+  fkeys:
+    order_id: orders
+  columns: [order_id, review_score, review_answer_timestamp]
+"""
+
+(TASK_DIR / "olist_database.yaml").write_text(DATABASE_YAML)
+print(f"Wrote {TASK_DIR / 'olist_database.yaml'}")
+```
+
+```console
+Wrote assets/relational_predictions_tabpfn_rel/olist_database.yaml
+```
+
+## The Task File
+
+The second YAML is the question. It names the entity you predict over, the target,
+the 30-day window, and the two dates that cut train from validation from test — then
+computes the label in SQL. `test_timestamp` is also the default prediction anchor.
+An optional later `at_timestamp` changes the anchor but does not expose database
+rows beyond `test_timestamp`.
+
+That query is the heart of it, and it reads as two windows around each anchor time:
+the `WHERE EXISTS` at the bottom looks **backwards** to keep only sellers who were
+active in the previous 30 days, and the `NOT EXISTS` at the top looks **forwards**
+and fires when no order arrives in the next 30. Churn only means something for
+sellers who had started, which is why both are needed.
+
+The rules for writing your own — which columns to emit, what `timestamp_df` is, how
+`{timedelta}` gets substituted — are in the [predictive-task
+guide](https://github.com/PriorLabs/relarena/blob/main/docs/predictive-task.md).
+
+```python
+TASK_YAML = """# Seller churn over Olist (binary classification).
+database: olist_database.yaml
+
+entity_table: sellers
+entity_col: seller_id
+time_col: timestamp
+target_col: churn
+task_type: binary_classification
+
+timedelta: 30 days
+num_eval_timestamps: 1
+val_timestamp: '2018-05-15 00:00:00'
+test_timestamp: '2018-06-15 00:00:00'
+entities: all
+
+query: |
+  SELECT timestamp, seller_id,
+    CAST(NOT EXISTS (
+      SELECT 1 FROM order_items
+      WHERE order_items.seller_id = sellers.seller_id
+        AND purchase_ts > timestamp AND purchase_ts <= timestamp + INTERVAL '{timedelta}'
+    ) AS INTEGER) AS churn
+  FROM timestamp_df, sellers
+  WHERE EXISTS (
+      SELECT 1 FROM order_items
+      WHERE order_items.seller_id = sellers.seller_id
+        AND purchase_ts > timestamp - INTERVAL '{timedelta}' AND purchase_ts <= timestamp
+  )
+"""
+
+task_path = TASK_DIR / "olist_seller_churn.yaml"
+task_path.write_text(TASK_YAML)
+print(f"Wrote {task_path}")
+```
+
+```console
+Wrote assets/relational_predictions_tabpfn_rel/olist_seller_churn.yaml
+```
+
+## Check the labels before spending compute
+
+Loading the spec validates both files, and constructing a `PredictiveQuery` runs
+your SQL once per split. The table that comes out *is* your supervised dataset, so
+it is worth a look before featurizing anything — if it is wrong, nothing downstream
+will save it.
+
+```python
+from relarena.userdb import PredictiveQuery, PredictiveQuerySpec
+
+spec = PredictiveQuerySpec.from_yaml(str(task_path), data_dir=str(DATA_DIR))
+pq = PredictiveQuery(spec)
+
+print(f"{spec.task.task_type} over `{spec.task.entity_table}` -> `{spec.task.target_col}`")
+print(f"Tables in the graph: {list(spec.database.tables)}\n")
+
+for split in ("train", "val", "test"):
+    df = pq.task.get_table(split, mask_input_cols=False).df
+    print(
+        f"{split:<5} {len(df):>6,} rows  "
+        f"{df['timestamp'].nunique():>2} anchor(s)  "
+        f"churn rate {df['churn'].mean():.1%}"
+    )
+
+pq.task.get_table("train", mask_input_cols=False).df.head()
+```
+
+Two things to notice: 11k training rows out of only ~3k sellers, because each
+seller recurs at many anchor times; and a churn rate around a quarter to a third,
+which is a healthy balance to model. A label that came out 99% one class would need
+a different approach.
+
+The integer `seller_id` is internal — RelArena reindexes keys, and `predict` maps
+them back.
+
+## Fit and predict
+
+`fit` featurizes and trains; `predict` then scores the task's configured prediction
+anchor. Because this task does not set `at_timestamp`, the anchor defaults to
+`test_timestamp`. The feature database is frozen at that cutoff, so rows from the
+forward 30-day label window are not visible to the model. Later,
+`compute_test_labels()` uses the complete source database only to evaluate the
+historical predictions.
+
+Two things to know. The model is a **string**, not part of the spec, so swapping
+`tabpfn-rel-client` for `constant-global` or `constant-per-entity` runs a different
+model against an identical task. `tabpfn-rel-local` provides the local GPU-backed
+variant when its corresponding package extra is installed. And `n_trials=0` skips
+hyperparameter tuning, which is the right default for a first run against a hosted
+API.
+
+Most of the wall-clock time is spent on DFS rather than model inference—expect a
+couple of minutes. Stronger CPUs with more CPU cores can speed up this step
+significantly. If you are interested in caching the features created during this
+step (and speeding up re-runs), see the optional caching example below.
+
+```python
+pq.fit("tabpfn-rel-client", n_trials=0, seed=0)
+preds = pq.predict()
+
+prediction_anchor = spec.task.at_timestamp or spec.task.test_timestamp
+print(
+    f"\nChurn probabilities for {len(preds):,} sellers, "
+    f"anchored at {prediction_anchor}"
+)
+preds.head()
+```
+
+### Optional: Caching to reuse relational features
+
+Depending on the strength of your CPU, TabPFN-Rel can spend a significant part of its runtime constructing relational
+features with deep feature synthesis (DFS), rather than running the model.
+Pass a local `cache_dir` to `fit()` to persist those features. Missing entries
+are computed and stored as the query runs; later identical operations reuse
+them. Nothing in the cache is uploaded.
+
+This can be helpful in many scenarios, like:
+- You might want to play with different levels of tuning, e.g. `n_trials=1` and `n_trials=3`. Caching is independent of tuning so you can reuse the relational features. Note that for `n_trials=0` we don't need to compute the cache for the inner split we tune, so going from `n_trials=0` to `n_trials>0` will still require some extra cache computation.
+- If you use the local version of `tabpfn-rel`, then you might want to run the cache pre-computation on a beefy CPU node for large datasets, while running the actual predictions of `tabpfn-rel` using a good GPU.
+
+`data_version` identifies the exact database snapshot behind the cache keys.
+Keep it stable while the CSV contents are unchanged, and bump it whenever the
+row content changes. In Colab, `./relarena-cache` lasts for the current runtime.
+To retain it across runtime restarts, use a directory on a mounted Google Drive.
+
+For more details, see the
+[predictive-interface caching documentation](https://github.com/PriorLabs/relarena/blob/main/docs/predictive-task.md#run-it).
+The caching API is optional and experimental.
+
+First, configure the cache and fit the model. `fit()` computes and stores the
+relational features it needs for training.
+
+```python
+import time
+from pathlib import Path
+
+from relarena.userdb import PredictiveQuery
+
+CACHE_DIR = Path("./relarena-cache")
+pq = PredictiveQuery(spec, data_version="olist-kaggle-v1")
+
+started = time.perf_counter()
+pq.fit(
+    "tabpfn-rel-client",
+    n_trials=1,
+    seed=0,
+    cache_dir=CACHE_DIR,
+)
+fit_seconds = time.perf_counter() - started
+
+print(f"Initial fit complete!")
+
+started_cached = time.perf_counter()
+pq.fit(
+    "tabpfn-rel-client",
+    n_trials=3,
+    seed=0,
+    cache_dir=CACHE_DIR,
+)
+fit_cached_seconds = time.perf_counter() - started_cached
+
+print(f"Second fit with more tuning complete!")
+
+print(f"Fit: {fit_seconds:.1f} s")
+print(f"Fit Cached: {fit_cached_seconds:.1f} s")
+print(f"Cache directory: {CACHE_DIR.resolve()}")
+```
+
+Assuming we ran the above cell for the first time, we can see that the second `fit()` is a lot faster even though it runs 3x the tuning than the first cell.
+
+Caching also works for `predict()`, as you can see in the cell below:
+
+**Note:** The speed-up is only calculated correctly the first time you run this cell. Delete/Rename/Change the cache directory in the cell above to rerun the measurements.
+
+```python
+import pandas as pd
+
+started = time.perf_counter()
+preds = pq.predict()
+first_seconds = time.perf_counter() - started
+
+started = time.perf_counter()
+preds_cached = pq.predict()
+cached_seconds = time.perf_counter() - started
+
+# The TabPFN API is slightly non-deterministic
+pd.testing.assert_series_equal(
+    preds["churn_pred"],
+    preds_cached["churn_pred"],
+    check_exact=False,
+    rtol=0,
+    atol=0.05,
+)
+
+print(f"First prediction:  {first_seconds:.1f} s")
+print(f"Cached prediction: {cached_seconds:.1f} s")
+print(f"Speedup:           {first_seconds / max(cached_seconds, 1e-9):.1f}×")
+prediction_anchor = spec.task.at_timestamp or spec.task.test_timestamp
+print(
+    f"\nChurn probabilities for {len(preds):,} sellers, "
+    f"anchored at {prediction_anchor}"
+)
+preds.head()
+```
+
+### Does it beat simple baselines?
+
+The Olist database contains the complete 30-day label window after its
+historical test timestamp, `2018-06-15`. We can therefore materialize the
+held-out churn outcomes and compare the existing TabPFN-Rel predictions with
+two learning-free baselines on the same sellers.
+
+- `constant-global` predicts the global churn rate observed during training.
+- `constant-per-entity` uses each seller's own history when available and falls
+  back to the global rate otherwise.
+
+`preds` and the fitted TabPFN-Rel query `pq` already exist from the previous
+section.
+
+```python
+# Compute the labels for the historical test window. By default, RelArena
+# verifies coverage using the latest timestamp present in the database.
+test_labels = pq.compute_test_labels()
+
+# Fit and predict with the two learning-free baselines. n_trials=0 is sufficient:
+# neither baseline has hyperparameters to tune.
+pq_dummy = PredictiveQuery(
+    spec, data_version="olist-kaggle-v1"
+).fit("constant-global", n_trials=0, seed=0)
+preds_dummy = pq_dummy.predict()
+
+pq_dummy_per_entity = PredictiveQuery(
+    spec, data_version="olist-kaggle-v1"
+).fit("constant-per-entity", n_trials=0, seed=0)
+preds_dummy_per_entity = pq_dummy_per_entity.predict()
+
+print(f"Held-out test sellers: {len(test_labels):,}")
+```
+
+`predict()` scores every seller by default, whereas the churn task evaluates
+only sellers active during the preceding 30 days. The prediction frames are
+therefore larger than `test_labels`. Joining from the labels selects the
+relevant cohort and checks that every held-out seller received a prediction.
+
+```python
+from sklearn.metrics import roc_auc_score
+
+
+def test_roc_auc(predictions):
+    scored = test_labels.merge(
+        predictions,
+        on=["timestamp", "seller_id"],
+        how="left",
+        validate="one_to_one",
+    )
+
+    missing = scored["churn_pred"].isna().sum()
+    if missing:
+        raise ValueError(
+            f"Predictions are missing {missing:,} rows from the test cohort."
+        )
+
+    return roc_auc_score(scored["churn"], scored["churn_pred"])
+
+
+test_scores = pd.Series(
+    {
+        "TabPFN-Rel": test_roc_auc(preds),
+        "Dummy": test_roc_auc(preds_dummy),
+        "Dummy per entity": test_roc_auc(preds_dummy_per_entity),
+    },
+    name="Test ROC-AUC",
+).sort_values(ascending=False)
+
+test_scores.to_frame().style.format("{:.3f}")
+```
+
+```console
+<pandas.io.formats.style.Styler at 0x78de1fde4d10>
+```
+
+We observe that TabPFN-Rel improves significantly over the baseline. Depending on the dataset, tuning (e.g. `n_trials=3`) can give another nice boost.
+
+## Where to go next
+
+**Your own database.** None of this is Olist-specific — a schema file and one label
+query is the whole setup. The two things to get right are a real event-time column
+on every event table, and a `columns` allow-list that excludes anything backfilled
+after the fact.
+
+**If a fit hangs**, the fan-out is too wide: DFS cost grows with how many
+tables an entity links out to. Prune the schema or use a lower featurization depth.
+
+**Regression** works identically — set `task_type: regression` and return a numeric
+target ("how much will this seller sell") instead of a 0/1 one.
+
+- [RelArena predictive-task guide](https://github.com/PriorLabs/relarena/blob/main/docs/predictive-task.md)
+  — label queries, split timestamps, leakage
+- [The Olist example in the RelArena repo](https://github.com/PriorLabs/relarena/tree/main/examples)
+  — the same task as a plain script
+- [TabPFN](https://github.com/PriorLabs/TabPFN) and
+  [tabpfn-client](https://github.com/PriorLabs/tabpfn-client)
+
+**Hint:** We designed the predictive interface with your favorite coding AI agent in mind. Point it at the resources above and it should be able to help formulate your first predictive task.
