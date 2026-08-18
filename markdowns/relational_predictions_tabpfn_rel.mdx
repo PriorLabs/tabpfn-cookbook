@@ -397,15 +397,6 @@ for split in ("train", "val", "test"):
 pq.task.get_table("train", mask_input_cols=False).df.head()
 ```
 
-```console
-   timestamp  seller_id  churn
-0 2016-09-22        523      0
-1 2016-09-22       1716      0
-2 2016-09-22       2040      1
-3 2016-10-22         22      1
-4 2016-10-22         55      1
-```
-
 Two things to notice: 11k training rows out of only ~3k sellers, because each
 seller recurs at many anchor times; and a churn rate around a quarter to a third,
 which is a healthy balance to model. A label that came out 99% one class would need
@@ -445,16 +436,6 @@ print(
     f"anchored at {prediction_anchor}"
 )
 preds.head()
-```
-
-```console
-Churn probabilities for 3,095 sellers, anchored at 2018-06-15 00:00:00
-                          seller_id  timestamp  churn_pred
-0  3442f8959a84dea7ee197c632cb2df15 2018-06-15    0.892699
-1  d1b65fc7debc3361ea86b5f14c68d2e2 2018-06-15    0.443584
-2  ce3ad9de960102d0677a81f5d0bb7b2d 2018-06-15    0.663485
-3  c0f3eea2e14555b6faeea3dd58c1b1c3 2018-06-15    0.660063
-4  51a04a8a6bdcb23deccc82b0b80742cf 2018-06-15    0.910192
 ```
 
 ### Optional: Caching to reuse relational features
@@ -517,10 +498,6 @@ print(f"Fit Cached: {fit_cached_seconds:.1f} s")
 print(f"Cache directory: {CACHE_DIR.resolve()}")
 ```
 
-```console
-Cache directory: /content/relarena-cache
-```
-
 Assuming we ran the above cell for the first time, we can see that the second `fit()` is a lot faster even though it runs 3x the tuning than the first cell.
 
 Caching also works for `predict()`, as you can see in the cell below:
@@ -556,20 +533,6 @@ print(
     f"anchored at {prediction_anchor}"
 )
 preds.head()
-```
-
-```console
-First prediction:  115.7 s
-Cached prediction: 8.5 s
-Speedup:           13.6×
-
-Churn probabilities for 3,095 sellers, anchored at 2018-06-15 00:00:00
-                          seller_id  timestamp  churn_pred
-0  3442f8959a84dea7ee197c632cb2df15 2018-06-15    0.893364
-1  d1b65fc7debc3361ea86b5f14c68d2e2 2018-06-15    0.461002
-2  ce3ad9de960102d0677a81f5d0bb7b2d 2018-06-15    0.662597
-3  c0f3eea2e14555b6faeea3dd58c1b1c3 2018-06-15    0.659443
-4  51a04a8a6bdcb23deccc82b0b80742cf 2018-06-15    0.910438
 ```
 
 ### Does it beat simple baselines?
@@ -642,6 +605,10 @@ test_scores = pd.Series(
 ).sort_values(ascending=False)
 
 test_scores.to_frame().style.format("{:.3f}")
+```
+
+```console
+<pandas.io.formats.style.Styler at 0x78de1fde4d10>
 ```
 
 We observe that TabPFN-Rel improves significantly over the baseline. Depending on the dataset, tuning (e.g. `n_trials=3`) can give another nice boost.
