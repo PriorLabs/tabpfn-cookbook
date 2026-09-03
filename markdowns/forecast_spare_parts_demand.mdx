@@ -1,7 +1,7 @@
 ---
 title: Forecast Daily Spare-parts Demand with TabPFN
-description: Compare local and grouped TabPFN regressors on realistic synthetic demand
-  from German manufacturing plants
+description: Compare local and pooled TabPFN regressors on synthetic demand from German
+  manufacturing plants
 icon: chart-line
 cookbookTags:
 - time-series
@@ -31,24 +31,18 @@ colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/bl
 {/* cookbook-colab:end process_markdown.py */}
 </div>
 {/* cookbook-meta:end process_markdown.py */}
-Spare-parts demand is a panel forecasting problem: many related daily series share calendar effects and operational patterns, but each part and plant also behaves differently. In this recipe we turn daily demand into a tabular regression problem and compare three ways to share information with `TabPFNRegressor`:
+Spare-parts demand is a panel forecasting problem: related daily series share calendar and operational patterns, but each part and plant also behaves differently. This recipe compares four `TabPFNRegressor` strategies: one model per **series**, one per **product category**, one per **location**, and a single **global** model.
 
-- **Series by series:** one local model for each part–plant pair.
-- **By product category:** one model pools related parts across plants.
-- **By location:** one model pools all parts used at the same plant.
+> The data is synthetic and does not represent any real company's operations.
 
-> The data in this notebook is entirely synthetic. Product names, plant locations, and quantities are illustrative and do not represent any real company's operations.
-
-## Setup
-
-The example uses the standard TabPFN regressor plus pandas, scikit-learn, German public-holiday calendars, and matplotlib. A GPU is recommended, though this compact example also runs on CPU.
+## Setup and data
 
 ```python
 import importlib.util
 
-required = ("tabpfn", "pandas", "sklearn", "matplotlib", "holidays")
+required = ("tabpfn", "pandas", "sklearn", "matplotlib")
 if not all(importlib.util.find_spec(package) for package in required):
-    %pip install -q tabpfn pandas scikit-learn matplotlib holidays
+    %pip install -q tabpfn pandas scikit-learn matplotlib
 ```
 
 ```python
@@ -57,485 +51,227 @@ import warnings
 warnings.filterwarnings("ignore", message="IProgress not found.*")
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-import holidays
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 from tabpfn import TabPFNRegressor
 
-pd.set_option("display.max_columns", 30)
 plt.style.use("seaborn-v0_8-whitegrid")
-SEED = 42
-```
-
-## Create realistic daily demand
-
-We simulate six spare parts at two German plants from January 2023 through December 2024. The generator combines weekday effects, state-specific holidays, annual seasonality, scheduled maintenance campaigns, summer and Christmas shutdowns, autocorrelated operating intensity, over-dispersed counts, intermittent zeros, and rare demand spikes. These ingredients produce the mixtures of regular, noisy, and sparse series common in maintenance consumption.
-
-```python
-PARTS = pd.DataFrame(
-    [
-        ("BRG-6204", "Deep-groove bearing 6204", "Bearings", 13.0, 0.13, 0.2),
-        ("BRG-6305", "Deep-groove bearing 6305", "Bearings", 7.0, 0.16, 0.5),
-        ("FLT-HYD-010", "Hydraulic filter 10 μm", "Filters", 5.0, 0.24, 2.2),
-        ("FLT-AIR-220", "Air filter cartridge 220", "Filters", 8.5, 0.20, 2.6),
-        ("DRV-BELT-A45", "Drive belt A45", "Drive", 6.0, 0.18, 4.0),
-        ("DRV-SPR-08", "Drive sprocket 08", "Drive", 3.2, 0.27, 4.4),
-    ],
-    columns=["part_id", "part_name", "category", "base_rate", "annual_amp", "phase"],
-)
-
-PLANTS = pd.DataFrame(
-    [
-        ("Stuttgart", "BW", 1.15),
-        ("Hamburg", "HH", 0.85),
-    ],
-    columns=["location", "state_code", "plant_factor"],
-)
-DATES = pd.date_range("2023-01-01", "2024-12-31", freq="D")
-```
-
-```python
-def simulate_daily_demand(seed=SEED):
-    rng = np.random.default_rng(seed)
-    frames = []
-
-    for plant in PLANTS.itertuples(index=False):
-        de_holidays = holidays.Germany(
-            years=sorted(set(DATES.year)), subdiv=plant.state_code
-        )
-        for part in PARTS.itertuples(index=False):
-            day = np.arange(len(DATES))
-            dow = DATES.dayofweek.to_numpy()
-            is_holiday = np.array([date.date() in de_holidays for date in DATES])
-            is_shutdown = (
-                DATES.isocalendar().week.astype(int).isin([32, 33]).to_numpy()
-                | ((DATES.month == 12) & (DATES.day >= 24))
-                | ((DATES.month == 1) & (DATES.day <= 2))
-            )
-
-            weekday_factor = np.array([1.12, 1.06, 1.03, 1.00, 0.84, 0.10, 0.05])[dow]
-            annual = 1 + part.annual_amp * np.sin(2 * np.pi * day / 365.25 + part.phase)
-            trend = 1 + rng.uniform(-0.06, 0.10) * day / len(DATES)
-            campaign = np.ones(len(DATES))
-            campaign_months = [3, 9] if part.category != "Bearings" else [4, 10]
-            campaign[np.isin(DATES.month, campaign_months) & (DATES.day <= 7)] = 1.65
-
-            # Slowly varying utilisation creates realistic runs of high and low demand.
-            state = np.zeros(len(DATES))
-            innovations = rng.normal(0, 0.075, len(DATES))
-            for i in range(1, len(DATES)):
-                state[i] = 0.88 * state[i - 1] + innovations[i]
-
-            mean = (
-                part.base_rate
-                * plant.plant_factor
-                * weekday_factor
-                * annual
-                * trend
-                * campaign
-                * np.exp(state)
-            )
-            mean[is_holiday] *= 0.08
-            mean[is_shutdown] *= 0.18
-
-            # Gamma-Poisson sampling gives over-dispersed integer demand.
-            dispersion = 5.0
-            stochastic_rate = rng.gamma(dispersion, mean / dispersion)
-            demand = rng.poisson(stochastic_rate)
-            if part.base_rate < 6:
-                demand[rng.random(len(DATES)) < 0.18] = 0
-            spikes = rng.random(len(DATES)) < 0.006
-            demand[spikes] += rng.poisson(np.maximum(mean[spikes] * 3.0, 1))
-
-            frames.append(
-                pd.DataFrame(
-                    {
-                        "date": DATES,
-                        "part_id": part.part_id,
-                        "part_name": part.part_name,
-                        "category": part.category,
-                        "location": plant.location,
-                        "state_code": plant.state_code,
-                        "is_holiday": is_holiday.astype(int),
-                        "is_shutdown": is_shutdown.astype(int),
-                        "demand": demand.astype(int),
-                    }
-                )
-            )
-
-    panel = pd.concat(frames, ignore_index=True)
-    panel["series_id"] = panel["part_id"] + " · " + panel["location"]
-    return panel.sort_values(["series_id", "date"]).reset_index(drop=True)
-
-
-panel = simulate_daily_demand()
+panel = pd.read_csv("spare_parts_daily.csv", parse_dates=["date"])
 print(f"{len(panel):,} rows | {panel['series_id'].nunique()} daily series | "
       f"{panel['date'].min().date()} to {panel['date'].max().date()}")
-panel.head()
 ```
 
 ```console
 8,772 rows | 12 daily series | 2023-01-01 to 2024-12-31
-        date   part_id                 part_name  category location  \
-0 2023-01-01  BRG-6204  Deep-groove bearing 6204  Bearings  Hamburg
-1 2023-01-02  BRG-6204  Deep-groove bearing 6204  Bearings  Hamburg
-2 2023-01-03  BRG-6204  Deep-groove bearing 6204  Bearings  Hamburg
-3 2023-01-04  BRG-6204  Deep-groove bearing 6204  Bearings  Hamburg
-4 2023-01-05  BRG-6204  Deep-groove bearing 6204  Bearings  Hamburg
-
-  state_code  is_holiday  is_shutdown  demand           series_id
-0         HH           1            1       0  BRG-6204 · Hamburg
-1         HH           0            1       3  BRG-6204 · Hamburg
-2         HH           0            0      13  BRG-6204 · Hamburg
-3         HH           0            0       8  BRG-6204 · Hamburg
-4         HH           0            0      20  BRG-6204 · Hamburg
 ```
 
-### Inspect a few series
+### A few demand series
 
-The 28-day moving average reveals the shared shutdowns and maintenance cycles while preserving clear differences in scale and intermittency.
+The selected series deliberately show different demand regimes: steady consumption, periodic replenishment, strong annual seasonality, and intermittent bulk orders.
 
 ```python
-EXAMPLE_SERIES = [
-    "BRG-6204 · Stuttgart",
-    "FLT-HYD-010 · Hamburg",
-    "FLT-AIR-220 · Stuttgart",
-    "DRV-SPR-08 · Hamburg",
+EXAMPLES = [
+    "BRG-6204 · Augsburg", "FLT-HYD-010 · Augsburg",
+    "FLT-AIR-220 · Bremen", "DRV-BELT-A45 · Bremen",
 ]
-
-fig, axes = plt.subplots(2, 2, figsize=(13, 7), sharex=True)
-for ax, series_id in zip(axes.flat, EXAMPLE_SERIES):
-    sample = panel.loc[panel["series_id"].eq(series_id)].set_index("date")
-    ax.plot(sample.index, sample["demand"], color="#B7B7B7", alpha=0.55, linewidth=0.7)
-    ax.plot(sample.index, sample["demand"].rolling(28).mean(), color="#F28E2B", linewidth=2)
-    ax.set_title(series_id)
-    ax.set_ylabel("units / day")
-fig.suptitle("Synthetic daily spare-parts demand (raw and 28-day mean)", fontsize=15)
+fig, axes = plt.subplots(2, 2, figsize=(14, 7), sharex=True)
+for ax, series_id in zip(axes.flat, EXAMPLES):
+    series = panel.loc[panel["series_id"].eq(series_id)].set_index("date")["demand"]
+    ax.plot(series, color="#B7B7B7", alpha=0.55, linewidth=0.7)
+    ax.plot(series.rolling(28).mean(), color="#F28E2B", linewidth=2)
+    ax.set(title=series_id, ylabel="units/day")
+fig.suptitle("Daily demand across parts and plants", fontsize=14)
 fig.tight_layout()
 plt.show()
 ```
 
-![Inspect a few series](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/forecast_spare_parts_demand/plot-01.png)
+![A few demand series](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/forecast_spare_parts_demand/plot-01.png)
 
-## Turn the time series into a supervised table
+## Build leakage-safe time-series features
 
-TabPFN is a tabular model, so each row needs to describe one target day. We add:
-
-- calendar and trend features;
-- weekly and annual Fourier terms;
-- demand lags at operationally useful daily and weekly offsets; and
-- shifted rolling statistics over 7 and 28 days.
-
-Every demand-derived feature starts with `shift(1)`. Therefore the row for day *t* never contains demand from day *t* or later.
+Each target day becomes a tabular row with calendar variables, weekly and annual Fourier terms, lags, and shifted rolling statistics. Every demand-derived feature starts at `shift(1)`, so it uses only information available before the target day.
 
 ```python
-LAGS = (1, 2, 7, 14, 28, 56)
-WINDOWS = (7, 28)
-SERIES_KEYS = ["series_id"]
-
-
-def add_time_series_features(frame):
-    result = frame.sort_values(SERIES_KEYS + ["date"]).copy()
-    date = result["date"]
-    result["day_of_week"] = date.dt.dayofweek
-    result["day_of_month"] = date.dt.day
-    result["month"] = date.dt.month
-    result["day_of_year"] = date.dt.dayofyear
-    result["is_weekend"] = date.dt.dayofweek.ge(5).astype(int)
-    result["time_index"] = (date - date.min()).dt.days
-
-    for period, harmonics, label in [(7, 1, "week"), (365.25, 2, "year")]:
+def add_features(data):
+    data = data.sort_values(["series_id", "date"]).copy()
+    day = (data["date"] - data["date"].min()).dt.days
+    data["day_of_week"] = data["date"].dt.dayofweek
+    data["month"] = data["date"].dt.month
+    data["time_index"] = day
+    for period, harmonics, name in [(7, 1, "week"), (365.25, 2, "year")]:
         for harmonic in range(1, harmonics + 1):
-            angle = 2 * np.pi * harmonic * result["time_index"] / period
-            result[f"{label}_sin_{harmonic}"] = np.sin(angle)
-            result[f"{label}_cos_{harmonic}"] = np.cos(angle)
+            angle = 2 * np.pi * harmonic * day / period
+            data[f"{name}_sin_{harmonic}"] = np.sin(angle)
+            data[f"{name}_cos_{harmonic}"] = np.cos(angle)
 
-    grouped = result.groupby(SERIES_KEYS, sort=False, observed=True)["demand"]
-    for lag in LAGS:
-        result[f"lag_{lag}"] = grouped.shift(lag)
-
-    shifted = grouped.shift(1)
-    shifted_grouped = shifted.groupby(result["series_id"], sort=False, observed=True)
-    for window in WINDOWS:
-        rolling = shifted_grouped.rolling(window, min_periods=window)
-        result[f"rolling_mean_{window}"] = rolling.mean().reset_index(level=0, drop=True)
-        result[f"rolling_std_{window}"] = rolling.std(ddof=0).reset_index(level=0, drop=True)
-        result[f"rolling_median_{window}"] = rolling.median().reset_index(level=0, drop=True)
-        result[f"rolling_max_{window}"] = rolling.max().reset_index(level=0, drop=True)
-        zeros = shifted.eq(0).astype(float).groupby(result["series_id"], sort=False).rolling(
-            window, min_periods=window
-        ).mean()
-        result[f"zero_share_{window}"] = zeros.reset_index(level=0, drop=True)
-
-    return result
+    demand = data.groupby("series_id", observed=True)["demand"]
+    for lag in (1, 2, 7, 14, 28, 56):
+        data[f"lag_{lag}"] = demand.shift(lag)
+    shifted = demand.shift(1)
+    for window in (7, 28):
+        rolling = shifted.groupby(data["series_id"], observed=True).rolling(window)
+        for statistic in ("mean", "std", "median", "max"):
+            data[f"rolling_{statistic}_{window}"] = getattr(rolling, statistic)().droplevel(0)
+    return data.dropna().reset_index(drop=True)
 
 
-featured = add_time_series_features(panel).dropna().reset_index(drop=True)
+featured = add_features(panel)
 featured.filter(regex="^(date|series_id|demand|lag_|rolling_|week_|year_)").head()
 ```
 
 ```console
-        date  demand           series_id    week_sin_1  week_cos_1  \
-0 2023-02-26       1  BRG-6204 · Hamburg -1.959435e-15    1.000000
-1 2023-02-27      19  BRG-6204 · Hamburg  7.818315e-01    0.623490
-2 2023-02-28       5  BRG-6204 · Hamburg  9.749279e-01   -0.222521
-3 2023-03-01       6  BRG-6204 · Hamburg  4.338837e-01   -0.900969
-4 2023-03-02      11  BRG-6204 · Hamburg -4.338837e-01   -0.900969
+        date  demand            series_id    week_sin_1  week_cos_1  \
+0 2023-02-26       2  BRG-6204 · Augsburg -1.959435e-15    1.000000
+1 2023-02-27      30  BRG-6204 · Augsburg  7.818315e-01    0.623490
+2 2023-02-28      30  BRG-6204 · Augsburg  9.749279e-01   -0.222521
+3 2023-03-01      29  BRG-6204 · Augsburg  4.338837e-01   -0.900969
+4 2023-03-02      26  BRG-6204 · Augsburg -4.338837e-01   -0.900969
 
-   year_sin_1  year_cos_1  year_sin_2  year_cos_2  lag_1  lag_2  lag_7  \
-0    0.821100    0.570784    0.937342   -0.348411    1.0   21.0    1.0
-1    0.830797    0.556576    0.924803   -0.380447    1.0    1.0    5.0
-2    0.840248    0.542202    0.911169   -0.412034   19.0    1.0    6.0
-3    0.849450    0.527668    0.896456   -0.443132    5.0   19.0   28.0
-4    0.858402    0.512978    0.880683   -0.473706    6.0    5.0    8.0
+   year_sin_1  year_cos_1  year_sin_2  year_cos_2  lag_1  ...  lag_28  lag_56  \
+0    0.821100    0.570784    0.937342   -0.348411    3.0  ...     2.0     0.0
+1    0.830797    0.556576    0.924803   -0.380447    2.0  ...    33.0     6.0
+2    0.840248    0.542202    0.911169   -0.412034   30.0  ...    33.0    28.0
+3    0.849450    0.527668    0.896456   -0.443132   30.0  ...    32.0    29.0
+4    0.858402    0.512978    0.880683   -0.473706   29.0  ...    30.0    27.0
 
-   lag_14  lag_28  lag_56  rolling_mean_7  rolling_std_7  rolling_median_7  \
-0     1.0     1.0     0.0       10.000000       9.651055               6.0
-1    36.0    19.0     3.0       10.000000       9.651055               6.0
-2     5.0    15.0    13.0       12.000000       9.856108               8.0
-3    12.0     6.0     8.0       11.857143       9.948849               8.0
-4     3.0    14.0    20.0        8.714286       7.534953               6.0
+   rolling_mean_7  rolling_std_7  rolling_median_7  rolling_max_7  \
+0       22.571429      13.986388              29.0           35.0
+1       22.571429      13.986388              29.0           35.0
+2       22.285714      13.780594              29.0           35.0
+3       21.571429      13.125765              29.0           31.0
+4       21.285714      12.906255              29.0           30.0
 
-   rolling_max_7  rolling_mean_28  rolling_std_28  rolling_median_28  \
-0           28.0         9.500000        8.394301                8.0
-1           28.0         9.500000        8.394301                8.0
-2           28.0         9.500000        8.394301                8.0
-3           28.0         9.142857        8.365381                7.0
-4           21.0         9.142857        8.365381                7.0
+   rolling_mean_28  rolling_std_28  rolling_median_28  rolling_max_28
+0        22.357143       12.798189               28.5            35.0
+1        22.357143       12.798189               28.5            35.0
+2        22.250000       12.718097               28.5            35.0
+3        22.142857       12.636556               28.5            35.0
+4        22.035714       12.562384               28.5            35.0
 
-   rolling_max_28
-0            36.0
-1            36.0
-2            36.0
-3            36.0
-4            36.0
+[5 rows x 23 columns]
 ```
 
-## Hold out the final four weeks
+## Hold out four weeks
 
-We evaluate 28 consecutive next-day forecasts. On each test day, the previous day's actual demand is assumed to have arrived before the new forecast is made. This rolling-origin setup is appropriate for daily replenishment decisions; it is different from predicting an entire 28-day horizon at once.
-
-Static part, category, and location labels are one-hot encoded so pooled models can distinguish their member series.
+This is a rolling next-day evaluation: for each test date, the previous day's observed demand is available. Static labels are one-hot encoded so pooled models can distinguish their member series.
 
 ```python
-TEST_DAYS = 28
-cutoff = featured["date"].max() - pd.Timedelta(days=TEST_DAYS - 1)
-
-STATIC_COLUMNS = ["part_id", "category", "location"]
-encoded = pd.get_dummies(featured, columns=STATIC_COLUMNS, dtype=float)
-# Keep the readable labels for selecting model pools; only their dummy columns are features.
-encoded[STATIC_COLUMNS] = featured[STATIC_COLUMNS]
-NON_FEATURES = {
-    "date", "part_name", "state_code", "series_id", "demand",
-    "part_id", "category", "location"
-}
-FEATURES = [column for column in encoded.columns if column not in NON_FEATURES]
-
-train = encoded.loc[encoded["date"].lt(cutoff)].copy()
-test = encoded.loc[encoded["date"].ge(cutoff)].copy()
-print(f"Train through {train['date'].max().date()}: {len(train):,} rows")
-print(f"Test from {cutoff.date()}: {len(test):,} rows ({TEST_DAYS} per series)")
-print(f"Candidate features: {len(FEATURES)}")
+cutoff = featured["date"].max() - pd.Timedelta(days=27)
+static = ["part_id", "category", "location"]
+encoded = pd.get_dummies(featured, columns=static, dtype=float)
+encoded[static] = featured[static]
+excluded = {"date", "part_name", "state_code", "series_id", "demand", *static}
+features = [column for column in encoded if column not in excluded]
+train, test = encoded[encoded["date"] < cutoff], encoded[encoded["date"] >= cutoff]
+print(f"{len(train):,} training rows, {len(test):,} test rows, {len(features)} features")
 ```
 
 ```console
-Train through 2024-12-03: 7,764 rows
-Test from 2024-12-04: 336 rows (28 per series)
-Candidate features: 41
+7,764 training rows, 336 test rows, 37 features
 ```
 
-## Fit local and grouped TabPFN regressors
+## Fit local, grouped, and global models
 
-The fitting helper is the key comparison. For every local series, product category, or location it:
-
-1. selects that group's training and test rows;
-2. removes features that are constant within the group;
-3. fills missing numeric values with training medians;
-4. fits `TabPFNRegressor` on `log1p(demand)`; and
-5. converts predictions back to non-negative unit demand.
-
-We retain at most the latest 300 observations per member series. This gives local models enough recent history while keeping pooled TabPFN contexts compact. Increase `n_estimators` from 2 to 8 or more for a production experiment.
+The helper changes only which rows are pooled. It otherwise uses `TabPFNRegressor` defaults, requests the predictive mean, and takes the 10th and 90th percentiles as an 80% predictive interval. Constant columns are removed within each pool.
 
 ```python
-MODEL_KWARGS = dict(
-    n_estimators=2,
-    device="auto",
-    ignore_pretraining_limits=True,
-    random_state=SEED,
-    show_progress_bar=False,
-)
-MAX_TRAIN_ROWS_PER_SERIES = 300
-
-
-def fit_predict_by(group_column, strategy_name):
-    predictions = []
-
-    for group_value, group_test in test.groupby(group_column, observed=True, sort=True):
-        group_train = train.loc[train[group_column].eq(group_value)].copy()
-        group_train = (
-            group_train.sort_values("date")
-            .groupby("series_id", observed=True, group_keys=False)
-            .tail(MAX_TRAIN_ROWS_PER_SERIES)
+def fit_by(group_column, strategy):
+    groups = [(None, test)] if group_column is None else test.groupby(group_column, observed=True)
+    results = []
+    for value, test_group in groups:
+        train_group = train if group_column is None else train[train[group_column] == value]
+        usable = [column for column in features if train_group[column].nunique() > 1]
+        fill = train_group[usable].median()
+        model = TabPFNRegressor()
+        model.fit(train_group[usable].fillna(fill), train_group["demand"])
+        distribution = model.predict(
+            test_group[usable].fillna(fill), output_type="main", quantiles=[0.1, 0.9]
         )
-
-        usable = [
-            column for column in FEATURES
-            if group_train[column].notna().any() and group_train[column].nunique(dropna=True) > 1
-        ]
-        fill_values = group_train[usable].median()
-        X_train = group_train[usable].fillna(fill_values).to_numpy(np.float32)
-        X_test = group_test[usable].fillna(fill_values).to_numpy(np.float32)
-        y_train = np.log1p(group_train["demand"].to_numpy(float))
-
-        model = TabPFNRegressor(**MODEL_KWARGS)
-        model.fit(X_train, y_train)
-        prediction = np.clip(np.expm1(model.predict(X_test)), 0, None)
-
-        predictions.append(
-            group_test[["date", "series_id", "demand"]].assign(
-                strategy=strategy_name, prediction=prediction
-            )
-        )
-
-    return pd.concat(predictions, ignore_index=True)
+        lower, upper = distribution["quantiles"]
+        results.append(test_group[["date", "series_id", "demand"]].assign(
+            strategy=strategy, prediction=np.clip(distribution["mean"], 0, None),
+            lower=np.clip(lower, 0, None), upper=np.clip(upper, 0, None),
+        ))
+    return pd.concat(results, ignore_index=True)
 
 
-local_predictions = fit_predict_by("series_id", "Series by series")
-category_predictions = fit_predict_by("category", "Product category")
-location_predictions = fit_predict_by("location", "Location")
-predictions = pd.concat(
-    [local_predictions, category_predictions, location_predictions], ignore_index=True
-)
-predictions.head()
+predictions = pd.concat([
+    fit_by("series_id", "Series by series"),
+    fit_by("category", "Product category"),
+    fit_by("location", "Location"),
+    fit_by(None, "Global"),
+])
 ```
 
-```console
-        date           series_id  demand          strategy  prediction
-0 2024-12-04  BRG-6204 · Hamburg       7  Series by series    8.251143
-1 2024-12-05  BRG-6204 · Hamburg      11  Series by series    7.752102
-2 2024-12-06  BRG-6204 · Hamburg       8  Series by series    7.203261
-3 2024-12-07  BRG-6204 · Hamburg       1  Series by series    0.864012
-4 2024-12-08  BRG-6204 · Hamburg       3  Series by series    0.648311
-```
-
-## Compare the pooling strategies
-
-No pooling strategy is universally best. Local models preserve each series' identity, category models can borrow strength from parts with similar failure or replacement cycles, and location models can learn plant-specific shutdown and utilisation patterns. We report MAE, RMSE, WAPE, and signed bias across the same held-out rows.
+## Compare pooling strategies
 
 ```python
 def score(group):
-    actual = group["demand"].to_numpy(float)
-    predicted = group["prediction"].to_numpy(float)
-    return pd.Series(
-        {
-            "MAE": mean_absolute_error(actual, predicted),
-            "RMSE": root_mean_squared_error(actual, predicted),
-            "WAPE (%)": 100 * np.abs(actual - predicted).sum() / actual.sum(),
-            "Bias (%)": 100 * (predicted - actual).sum() / actual.sum(),
-        }
-    )
+    actual, predicted = group["demand"], group["prediction"]
+    return pd.Series({
+        "MAE": mean_absolute_error(actual, predicted),
+        "RMSE": root_mean_squared_error(actual, predicted),
+        "WAPE (%)": 100 * np.abs(actual - predicted).sum() / actual.sum(),
+        "80% coverage (%)": 100 * ((actual >= group["lower"]) & (actual <= group["upper"])).mean(),
+    })
 
 
-metrics = (
-    predictions.groupby("strategy", observed=True)
-    .apply(score, include_groups=False)
-    .sort_values("WAPE (%)")
-    .round(2)
-)
+metrics = predictions.groupby("strategy").apply(score, include_groups=False).sort_values("WAPE (%)").round(2)
 metrics
 ```
 
 ```console
-                   MAE  RMSE  WAPE (%)  Bias (%)
+                   MAE  RMSE  WAPE (%)  80% coverage (%)
 strategy
-Location          2.12  3.84     51.69    -18.67
-Product category  2.15  3.87     52.35    -18.21
-Series by series  2.25  4.01     54.80    -18.51
+Product category  1.04  1.61     13.83             86.01
+Global            1.05  1.64     13.94             87.20
+Location          1.08  1.68     14.35             86.31
+Series by series  1.11  1.65     14.79             87.20
 ```
 
 ```python
-ax = metrics["WAPE (%)"].sort_values().plot.barh(
-    figsize=(8, 3.5), color=["#59A14F", "#4E79A7", "#F28E2B"]
-)
-ax.set_title("Daily forecast error by TabPFN pooling strategy")
-ax.set_xlabel("WAPE (%) — lower is better")
-ax.set_ylabel("")
-for container in ax.containers:
-    ax.bar_label(container, fmt="%.1f", padding=4)
+ax = metrics["WAPE (%)"].sort_values().plot.barh(figsize=(8, 3.5), color="#4E79A7")
+ax.set(title="Daily forecast error by pooling strategy", xlabel="WAPE (%) — lower is better", ylabel="")
+ax.bar_label(ax.containers[0], fmt="%.1f", padding=4)
 plt.tight_layout()
 plt.show()
 ```
 
-![Compare the pooling strategies](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/forecast_spare_parts_demand/plot-02.png)
+![Compare pooling strategies](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/forecast_spare_parts_demand/plot-02.png)
 
-### Forecast traces for selected parts
+### Forecasts with predictive intervals
 
-Plotting individual series is essential: aggregate metrics can hide systematic over-forecasting of sparse items or missed maintenance peaks. The solid black line is observed demand; colored dashed lines are the three TabPFN strategies during the final 28 days.
+Separate panels compare the four strategies on a steady high-volume bearing and a hydraulic filter with periodic replenishment peaks. The dotted line marks the start of the 28-day holdout.
 
 ```python
-PLOT_SERIES = [
-    "BRG-6204 · Stuttgart",
-    "FLT-HYD-010 · Hamburg",
-    "DRV-SPR-08 · Hamburg",
-]
-COLORS = {
-    "Series by series": "#4E79A7",
-    "Product category": "#F28E2B",
-    "Location": "#59A14F",
-}
-
-fig, axes = plt.subplots(len(PLOT_SERIES), 1, figsize=(13, 9), sharex=True)
-history_start = cutoff - pd.Timedelta(days=62)
-for ax, series_id in zip(axes, PLOT_SERIES):
-    actual = panel.loc[
-        panel["series_id"].eq(series_id) & panel["date"].ge(history_start)
-    ]
-    ax.plot(actual["date"], actual["demand"], color="#222222", linewidth=1.4, label="Actual")
-    for strategy, forecast in predictions.loc[predictions["series_id"].eq(series_id)].groupby("strategy"):
-        ax.plot(
-            forecast["date"], forecast["prediction"],
-            color=COLORS[strategy], linestyle="--", linewidth=1.8, label=strategy,
-        )
-    ax.axvline(cutoff, color="#777777", linestyle=":", linewidth=1)
-    ax.set_title(series_id, loc="left")
-    ax.set_ylabel("units")
-axes[0].legend(ncol=4, frameon=True, loc="upper center")
-axes[-1].set_xlabel("date")
-fig.suptitle("Rolling next-day forecasts over the 28-day holdout", fontsize=15, y=1.01)
+plot_series = ["BRG-6204 · Augsburg", "FLT-HYD-010 · Augsburg"]
+strategies = ["Series by series", "Product category", "Location", "Global"]
+fig, axes = plt.subplots(len(plot_series), len(strategies), figsize=(16, 7), sharex=True)
+for row, series_id in enumerate(plot_series):
+    actual = panel[(panel["series_id"] == series_id) & (panel["date"] >= cutoff - pd.Timedelta(days=55))]
+    for column, strategy in enumerate(strategies):
+        ax = axes[row, column]
+        forecast = predictions[(predictions["series_id"] == series_id) & (predictions["strategy"] == strategy)]
+        ax.plot(actual["date"], actual["demand"], color="#222222", linewidth=1.2, label="Actual")
+        ax.fill_between(forecast["date"], forecast["lower"], forecast["upper"], color="#4E79A7", alpha=0.22, label="80% interval")
+        ax.plot(forecast["date"], forecast["prediction"], color="#4E79A7", linewidth=1.8, label="Forecast")
+        ax.axvline(cutoff, color="#777777", linestyle=":")
+        ax.xaxis.set_major_locator(mdates.MonthLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b"))
+        ax.set_title(strategy if row == 0 else series_id, fontsize=10)
+        if column == 0:
+            ax.set_ylabel(f"{series_id}\nunits/day")
+axes[0, 0].legend(frameon=True, fontsize=8, loc="upper left")
+fig.suptitle("Rolling next-day forecasts with 80% predictive intervals", fontsize=14)
 fig.tight_layout()
 plt.show()
 ```
 
-![Forecast traces for selected parts](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/forecast_spare_parts_demand/plot-03.png)
+![Forecasts with predictive intervals](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/forecast_spare_parts_demand/plot-03.png)
 
-## Diagnose where grouping helps
+## Takeaways
 
-A global winner does not imply the same choice for every category. The view below breaks WAPE down by product category and helps decide whether routing series to different model pools is worthwhile.
-
-```python
-series_metadata = panel[["series_id", "category", "location"]].drop_duplicates()
-detailed = predictions.merge(series_metadata, on="series_id", validate="many_to_one")
-by_category = (
-    detailed.groupby(["category", "strategy"], observed=True)
-    .apply(lambda x: 100 * np.abs(x["demand"] - x["prediction"]).sum() / x["demand"].sum(), include_groups=False)
-    .unstack("strategy")
-    .round(1)
-)
-by_category
-```
-
-```console
-strategy  Location  Product category  Series by series
-category
-Bearings      44.6              44.9              47.4
-Drive         57.5              58.2              63.8
-Filters       57.0              58.0              59.1
-```
-
-## Takeaways and production extensions
-
-This pattern turns a collection of daily series into small, related tabular regression tasks. Local TabPFN models are a strong choice when a series has ample history and distinctive dynamics. Category or location pooling is often more useful for sparse series because the model can reuse evidence from related parts. Validate the choice with rolling backtests rather than assuming one grouping will dominate.
-
-For a production spare-parts system, consider adding known-in-advance signals such as planned maintenance orders, shift calendars, installed-base counts, lead times, stock-outs, and promotions. Keep unavailable future information out of feature rows, evaluate several forecast origins, and use a direct-horizon or recursive design when the business needs a fixed multi-day forecast rather than daily next-day updates. Prediction intervals and asymmetric stock-out costs are natural next steps.
+Pooling can help when related series share calendar, maintenance, or plant-level patterns; local models remain useful when a series has enough history and distinct dynamics. Choose the level with repeated rolling backtests, not a single split. For fixed multi-day forecasts, replace this next-day setup with direct-horizon or recursive features, and add known signals such as work orders, installed-base counts, lead times, and stock-outs.

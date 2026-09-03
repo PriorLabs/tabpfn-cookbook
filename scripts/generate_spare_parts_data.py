@@ -15,12 +15,13 @@ DEFAULT_OUTPUT = ROOT / "notebooks" / "spare_parts_daily.csv"
 DATES = pd.date_range("2023-01-01", "2024-12-31", freq="D")
 
 PARTS = [
-    ("BRG-6204", "Deep-groove bearing 6204", "Bearings", 24.0, 0.10, 0.2),
-    ("BRG-6305", "Deep-groove bearing 6305", "Bearings", 17.0, 0.12, 0.5),
-    ("FLT-HYD-010", "Hydraulic filter 10 μm", "Filters", 14.0, 0.16, 2.2),
-    ("FLT-AIR-220", "Air filter cartridge 220", "Filters", 18.0, 0.14, 2.6),
-    ("DRV-BELT-A45", "Drive belt A45", "Drive", 12.0, 0.13, 4.0),
-    ("DRV-SPR-08", "Drive sprocket 08", "Drive", 8.0, 0.18, 4.4),
+    # id, name, category, base rate, annual amplitude, phase, trend, demand pattern
+    ("BRG-6204", "Deep-groove bearing 6204", "Bearings", 24.0, 0.06, 0.2, 0.03, "steady"),
+    ("BRG-6305", "Deep-groove bearing 6305", "Bearings", 18.0, 0.10, 0.5, -0.24, "declining"),
+    ("FLT-HYD-010", "Hydraulic filter 10 μm", "Filters", 7.0, 0.08, 2.2, 0.02, "replenishment"),
+    ("FLT-AIR-220", "Air filter cartridge 220", "Filters", 13.0, 0.55, 2.6, 0.12, "seasonal"),
+    ("DRV-BELT-A45", "Drive belt A45", "Drive", 4.5, 0.12, 4.0, 0.05, "campaign"),
+    ("DRV-SPR-08", "Drive sprocket 08", "Drive", 2.0, 0.18, 4.4, 0.08, "intermittent"),
 ]
 PLANTS = [("Augsburg", "BY", 1.12), ("Bremen", "HB", 0.88)]
 
@@ -31,7 +32,16 @@ def generate(seed: int = 42) -> pd.DataFrame:
 
     for location, state_code, plant_factor in PLANTS:
         public_holidays = holidays.Germany(years=[2023, 2024], subdiv=state_code)
-        for part_id, part_name, category, base_rate, annual_amp, phase in PARTS:
+        for (
+            part_id,
+            part_name,
+            category,
+            base_rate,
+            annual_amp,
+            phase,
+            trend_rate,
+            pattern,
+        ) in PARTS:
             day = np.arange(len(DATES))
             day_of_week = DATES.dayofweek.to_numpy()
             is_holiday = np.array([date.date() in public_holidays for date in DATES])
@@ -44,8 +54,11 @@ def generate(seed: int = 42) -> pd.DataFrame:
             is_campaign = np.isin(DATES.month, campaign_months) & (DATES.day <= 7)
 
             weekly = np.array([1.08, 1.05, 1.03, 1.00, 0.90, 0.12, 0.07])[day_of_week]
+            if category == "Filters":
+                # Filters are consumed during weekend operation too, unlike most parts.
+                weekly = np.array([1.02, 1.00, 1.00, 0.98, 0.95, 0.62, 0.45])[day_of_week]
             annual = 1 + annual_amp * np.sin(2 * np.pi * day / 365.25 + phase)
-            trend = 1 + rng.uniform(-0.04, 0.07) * day / len(DATES)
+            trend = 1 + trend_rate * day / len(DATES)
 
             utilisation = np.zeros(len(DATES))
             innovations = rng.normal(0, 0.025, len(DATES))
@@ -53,14 +66,35 @@ def generate(seed: int = 42) -> pd.DataFrame:
                 utilisation[index] = 0.90 * utilisation[index - 1] + innovations[index]
 
             expected = base_rate * plant_factor * weekly * annual * trend
-            expected *= np.where(is_campaign, 1.35, 1.0) * np.exp(utilisation)
+            expected *= np.exp(utilisation)
+
+            if pattern == "replenishment":
+                # Hydraulic filters arrive in concentrated eight-week replacement cycles.
+                distance = np.minimum((day + 9) % 56, 56 - ((day + 9) % 56))
+                expected *= 0.18 + 4.8 * np.exp(-0.5 * (distance / 2.4) ** 2)
+            elif pattern == "campaign":
+                # Belt replacement is concentrated in short maintenance campaigns.
+                expected *= np.where(is_campaign, 4.5, 0.65)
+
             expected *= np.where(is_holiday, 0.12, 1.0)
             expected *= np.where(is_shutdown, 0.18, 1.0)
 
-            noise = rng.normal(0, 0.45 * np.sqrt(np.maximum(expected, 1)), len(DATES))
-            demand = np.rint(np.clip(expected + noise, 0, None)).astype(int)
-            spikes = rng.random(len(DATES)) < 0.003
-            demand[spikes] += np.rint(expected[spikes] * rng.uniform(0.5, 1.0, spikes.sum())).astype(int)
+            if pattern == "intermittent":
+                # Slow-moving sprockets have many zero-demand days and occasional bulk orders.
+                order_probability = np.clip(0.10 + expected / 35, 0.08, 0.28)
+                orders = rng.random(len(DATES)) < order_probability
+                demand = np.zeros(len(DATES), dtype=int)
+                demand[orders] = 1 + rng.negative_binomial(2, 0.42, orders.sum())
+                bulk_orders = rng.random(len(DATES)) < 0.012
+                demand[bulk_orders] += rng.integers(6, 16, bulk_orders.sum())
+            else:
+                noise_scale = 0.28 if pattern == "steady" else 0.55
+                noise = rng.normal(0, noise_scale * np.sqrt(np.maximum(expected, 1)), len(DATES))
+                demand = np.rint(np.clip(expected + noise, 0, None)).astype(int)
+                spikes = rng.random(len(DATES)) < (0.002 if pattern == "steady" else 0.005)
+                demand[spikes] += np.rint(
+                    expected[spikes] * rng.uniform(0.5, 1.4, spikes.sum())
+                ).astype(int)
 
             frames.append(
                 pd.DataFrame(
