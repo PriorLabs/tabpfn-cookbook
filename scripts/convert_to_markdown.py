@@ -6,7 +6,10 @@ Embedded plot outputs are written to ``visuals/<slug>/`` and inserted into the
 MDX as conversion walks the notebook. The notebook file is not modified.
 
 Manual markdown image cells that already point at ``../visuals/...`` are left
-as-is (paths are rewritten to raw GitHub URLs). If a code cell has both an
+as-is (paths are rewritten to raw GitHub URLs). Images embedded as notebook
+cell attachments (``![alt](attachment:name.png)``) are written to
+``visuals/<slug>/name.png`` and referenced the same way, so the notebook stays
+self-contained for Colab and GitHub. If a code cell has both an
 embedded plot and a following manual visuals markdown cell, the file named by
 that markdown cell is refreshed and the markdown cell supplies the MDX image.
 
@@ -51,6 +54,8 @@ IMAGE_MIME_EXTENSIONS = {
 VISUAL_MARKDOWN_REF_RE = re.compile(
     r"!\[([^\]]*)\]\(\.\./visuals/([^)]+)\)"
 )
+
+ATTACHMENT_REF_RE = re.compile(r"\]\(attachment:([^)]+)\)")
 
 
 def parse_args() -> argparse.Namespace:
@@ -169,6 +174,30 @@ def emit_plot_images(
     return blocks
 
 
+def emit_attachment_images(cell: dict, slug: str, text: str) -> str:
+    """Write cell attachments to ``visuals/<slug>/`` and point the markdown at them."""
+    attachments = cell.get("attachments") or {}
+    if not attachments:
+        return text
+
+    for name, data in attachments.items():
+        for mime in IMAGE_MIME_EXTENSIONS:
+            if mime in data:
+                payload = data[mime]
+                if isinstance(payload, list):
+                    payload = "".join(payload)
+                write_visual(slug, name, base64.b64decode(payload))
+                break
+
+    def replace_ref(match: re.Match[str]) -> str:
+        name = match.group(1).strip()
+        if name not in attachments:
+            return match.group(0)
+        return f"](../visuals/{slug}/{name})"
+
+    return ATTACHMENT_REF_RE.sub(replace_ref, text)
+
+
 def notebook_to_mdx(notebook: dict, *, slug: str) -> str:
     body_parts: list[str] = []
     frontmatter: str | None = None
@@ -180,7 +209,7 @@ def notebook_to_mdx(notebook: dict, *, slug: str) -> str:
         cell_type = cell.get("cell_type")
 
         if cell_type == "markdown":
-            text = cell_source(cell).strip()
+            text = emit_attachment_images(cell, slug, cell_source(cell).strip())
             if not text:
                 continue
 
