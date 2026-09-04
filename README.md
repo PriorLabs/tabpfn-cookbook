@@ -42,7 +42,7 @@ git commit -m "Add <slug> cookbook"
 ```
 
 
-**Plots:** embedded chart outputs are extracted automatically on convert. You can also add files under `visuals/<slug>/` and reference them from a markdown cell:
+**Plots and images:** embedded chart outputs are extracted automatically on convert. Images pasted into a markdown cell as attachments (`![alt](attachment:name.png)`) are extracted to `visuals/<slug>/name.png` as well, and keep rendering in Colab and on GitHub. You can also add files under `visuals/<slug>/` and reference them from a markdown cell:
 
 ```markdown
 ![My chart](../visuals/<slug>/my-chart.png)
