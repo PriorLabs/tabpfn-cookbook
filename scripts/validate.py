@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from convert_to_markdown import convert_notebook_to_mdx
 from cookbook_utils import (
+    MAX_FEATURED_COOKBOOKS,
     author_block_is_current,
     colab_block_is_current,
     parse_mdx_frontmatter,
@@ -127,6 +128,38 @@ def check_notebooks_converted() -> bool:
     return False
 
 
+def check_featured_limit() -> bool:
+    """Ensure at most MAX_FEATURED_COOKBOOKS recipes set `featured: true`.
+
+    This is a cross-file rule, so it always scans every markdown file rather
+    than only the ones changed in the current PR.
+    """
+    featured: list[str] = []
+
+    for path in all_markdown_paths():
+        try:
+            frontmatter = parse_mdx_frontmatter(path)
+        except ValueError:
+            # Reported by validate_markdown_files for changed files; skip here.
+            continue
+        if frontmatter.get("featured") is True:
+            featured.append(path.relative_to(ROOT).as_posix())
+
+    if len(featured) <= MAX_FEATURED_COOKBOOKS:
+        return True
+
+    print(
+        f"Too many featured cookbooks: {len(featured)} set `featured: true` "
+        f"but the docs index only has room for {MAX_FEATURED_COOKBOOKS}.\n"
+        "Remove `featured: true` from one of:",
+        file=sys.stderr,
+    )
+    for name in featured:
+        print(f"  - {name}", file=sys.stderr)
+
+    return False
+
+
 def validate_markdown_files(paths: list[Path]) -> bool:
     ok = True
 
@@ -182,6 +215,8 @@ def main() -> int:
             ok = False
         if not validate_markdown_files(all_markdown_paths()):
             ok = False
+        if not check_featured_limit():
+            ok = False
         if ok:
             print("Cookbook validation passed.")
         return 0 if ok else 1
@@ -204,6 +239,10 @@ def main() -> int:
         print("Validating frontmatter for affected markdown files.")
 
     if markdown_paths and not validate_markdown_files(markdown_paths):
+        ok = False
+
+    # Cross-file rule: needs the full set, not just the changed files.
+    if markdown_paths and not check_featured_limit():
         ok = False
 
     if not notebook_changes and not markdown_changes:

@@ -16,11 +16,15 @@ ALLOWED_FRONTMATTER_KEYS = frozenset(
         "icon",
         "cookbookTags",
         "feature_in_doc",
+        "featured",
         "authors",
         "colab_url",
     }
 )
 AUTHOR_SOCIAL_KEYS = frozenset({"github", "linkedin", "twitter", "x"})
+# Upper bound on recipes with `featured: true`; they share the top row of the
+# docs cookbook index, which only has room for three tiles.
+MAX_FEATURED_COOKBOOKS = 3
 COOKBOOKS_REPO = "PriorLabs/tabpfn-cookbook"
 COOKBOOKS_RAW_BRANCH = "main"
 COOKBOOKS_RAW_BASE_URL = (
@@ -589,6 +593,9 @@ def validate_frontmatter(frontmatter: dict[str, object], *, source: str) -> list
 
     if "feature_in_doc" in frontmatter and not str(frontmatter["feature_in_doc"]).strip():
         errors.append(f"{source}: feature_in_doc must be a non-empty string when set")
+
+    if "featured" in frontmatter and not isinstance(frontmatter["featured"], bool):
+        errors.append(f"{source}: featured must be a boolean (true/false) when set")
 
     if "colab_url" in frontmatter:
         value = frontmatter.get("colab_url")
