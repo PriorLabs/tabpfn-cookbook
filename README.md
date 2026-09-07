@@ -117,6 +117,7 @@ icon: "bolt"
 cookbookTags:
   - api
 feature_in_doc: classification
+featured: true
 authors:
   - name: Prior Labs
     linkedin: https://www.linkedin.com/company/prior-labs
@@ -125,8 +126,10 @@ authors:
 ```
 
 Required: `title`, `description`  
-Optional: `icon`, `cookbookTags`, `feature_in_doc`, `authors`  
+Optional: `icon`, `cookbookTags`, `feature_in_doc`, `featured`, `authors`  
 Auto-set for notebooks: `colab_url`
+
+`featured: true` pins the recipe to the top row of the Cookbook index on docs.priorlabs.ai with a highlighted tile and a "Featured" badge. Featured recipes share that top row, so **at most 3** may be featured at once; `validate.py` (and CI) fails if more are set. Omit it (or set `false`) for normal tiles.
 
 ## CI (maintainers)
 
