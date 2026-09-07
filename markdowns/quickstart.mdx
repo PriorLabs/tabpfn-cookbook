@@ -1,0 +1,141 @@
+---
+title: TabPFN Quickstart
+description: Classify and regress with the hosted TabPFN API, then run locally.
+icon: bolt
+cookbookTags:
+- api
+authors:
+- name: Eliott Kalfon
+  linkedin: https://www.linkedin.com/in/eliott-kalfon/
+colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/quickstart.ipynb
+---
+{/* cookbook-meta:start process_markdown.py */}
+<div className="cookbook-meta">
+{/* cookbook-authors:start process_markdown.py */}
+<div className="cookbook-authors">
+  <div className="cookbook-author-bar">
+    <span className="cookbook-author-by">By</span>
+    <span className="cookbook-author-list"><span className="cookbook-author-entry"><span className="cookbook-author-name">Eliott Kalfon</span><span className="cookbook-author-links"><a href="https://www.linkedin.com/in/eliott-kalfon/" className="cookbook-author-icon-link" aria-label="LinkedIn" target="_blank" rel="noopener noreferrer"><svg className="cookbook-author-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 1 1 0-4.124 2.062 2.062 0 0 1 0 4.124zM7.119 20.452H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg></a></span></span></span>
+  </div>
+</div>
+{/* cookbook-authors:end process_markdown.py */}
+{/* cookbook-colab:start process_markdown.py */}
+<div className="cookbook-colab">
+  <a href="https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/quickstart.ipynb" className="cookbook-colab-button" target="_blank" rel="noopener noreferrer">
+    <svg className="cookbook-colab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="#F9AB00" d="M16.9414 4.9757a7.033 7.033 0 0 0-4.9308 2.0646 7.033 7.033 0 0 0-.1232 9.8068l2.395-2.395a3.6455 3.6455 0 0 1 5.1497-5.1478l2.397-2.3989a7.033 7.033 0 0 0-4.8877-1.9297zM7.07 4.9855a7.033 7.033 0 0 0-4.8878 1.9316l2.3911 2.3911a3.6434 3.6434 0 0 1 5.0227.1271l1.7341-2.9737-.0997-.0802A7.033 7.033 0 0 0 7.07 4.9855zm15.0093 2.1721l-2.3892 2.3911a3.6455 3.6455 0 0 1-5.1497 5.1497l-2.4067 2.4068a7.0362 7.0362 0 0 0 9.9456-9.9476zM1.932 7.1674a7.033 7.033 0 0 0-.002 9.6816l2.397-2.397a3.6434 3.6434 0 0 1-.004-4.8916zm7.664 7.4235c-1.38 1.3816-3.5863 1.411-5.0168.1134l-2.397 2.395c2.4693 2.3328 6.263 2.5753 9.0072.5455l.1368-.1115z"/></svg>
+    <span className="cookbook-colab-label">Open in Colab</span>
+  </a>
+</div>
+{/* cookbook-colab:end process_markdown.py */}
+</div>
+{/* cookbook-meta:end process_markdown.py */}
+# TabPFN Quickstart
+
+Use TabPFN's pretrained model with scikit-learn's `fit` / `predict` workflow. Start with the hosted API; try local inference at the end.
+
+## Setup
+
+Install the client, local package, and example dependencies.
+
+```python
+%pip install -q tabpfn tabpfn-client scikit-learn
+```
+
+## Authenticate
+
+Sign in at [Prior Labs](https://ux.priorlabs.ai), accept the license, and copy your API key into a Colab secret named `TABPFN_TOKEN`. Enable notebook access to that secret.
+
+```python
+import os
+from google.colab import userdata
+from tabpfn_client import set_access_token
+
+os.environ["TABPFN_TOKEN"] = userdata.get("TABPFN_TOKEN")
+set_access_token(userdata.get('TABPFN_TOKEN'))
+```
+
+## Classification
+
+Split the German credit dataset, then evaluate held-out predictions with ROC AUC and accuracy. `fit` supplies context to the pretrained model without updating its weights.
+
+```python
+from sklearn.datasets import fetch_openml
+from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.model_selection import train_test_split
+
+from tabpfn_client import TabPFNClassifier
+
+X, y = fetch_openml(data_id=46562, as_frame=True, return_X_y=True)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.33, random_state=42, stratify=y
+)
+
+clf = TabPFNClassifier()
+clf.fit(X_train, y_train)
+
+prediction_probabilities = clf.predict_proba(X_test)
+print("ROC AUC:", roc_auc_score(y_test, prediction_probabilities[:, 1]))
+
+predictions = clf.predict(X_test)
+print("Accuracy", accuracy_score(y_test, predictions))
+```
+
+```console
+ROC AUC: 0.8050636232454415
+Accuracy 0.7818181818181819
+```
+
+## Regression
+
+Predict diabetes progression and report mean squared error, mean absolute error, and R².
+
+```python
+from sklearn.datasets import load_diabetes
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+from tabpfn_client import TabPFNRegressor
+
+X, y = load_diabetes(return_X_y=True)
+X_train, X_test, y_train, y_test = train_test_split(
+    X,
+    y,
+    test_size=0.33,
+    random_state=42,
+)
+
+reg = TabPFNRegressor()
+reg.fit(X_train, y_train)
+
+predictions = reg.predict(X_test)
+print("Mean Squared Error (MSE):", mean_squared_error(y_test, predictions))
+print("Mean Absolute Error (MAE):", mean_absolute_error(y_test, predictions))
+print("R-squared (R^2):", r2_score(y_test, predictions))
+```
+
+```console
+Mean Squared Error (MSE): 2698.666027142602
+Mean Absolute Error (MAE): 40.93228039676196
+R-squared (R^2): 0.5310957151096967
+```
+
+## Run locally
+
+Switch the import to `tabpfn` to run inference on your machine. The first use downloads model weights; a GPU is recommended for this example.
+
+```python
+from tabpfn import TabPFNClassifier
+
+X, y = fetch_openml(data_id=46562, as_frame=True, return_X_y=True)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.33, random_state=42, stratify=y
+)
+
+clf = TabPFNClassifier()  # downloads weights on first use, then runs locally
+clf.fit(X_train, y_train)
+print("Local ROC AUC:", roc_auc_score(y_test, clf.predict_proba(X_test)[:, 1]))
+```
+
+```console
+Local ROC AUC: 0.8055446237264419
+```
