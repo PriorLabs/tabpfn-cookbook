@@ -43,6 +43,7 @@ Use a CPU runtime and a staging API token with TabPFN 3.5 enabled. Set `TABPFN_C
 ```
 
 ```python
+import gc
 import os
 import time
 from getpass import getpass
@@ -193,17 +194,19 @@ Pass the original columns, including review text, directly to the client. Stagin
 
 ```python
 common = dict(n_estimators=8, random_state=SEED)
-model = TabPFNRegressor.create_default_for_version(ModelVersion.V3, **common)
-model.fit(X_train, y_train)
-record("TabPFN 3", model.predict(X_test))
+for name, version in [("TabPFN 3.5", ModelVersion.V3_5), ("TabPFN 3", ModelVersion.V3)]:
+    model = TabPFNRegressor.create_default_for_version(version, **common)
+    model.fit(X_train, y_train)
+    prediction = model.predict(X_test)
+    record(name, prediction)
+    print(f"{name}: R²={results[-1]['R² ↑']:.4f}")
+    del model
+    _ = gc.collect()
 ```
 
-**Pending:** the staging account returned HTTP 403 for TabPFN 3.5 ("not enabled for your account"). The call below is ready; saved scores currently cover TabPFN 3 and XGBoost only.
-
-```python
-model = TabPFNRegressor.create_default_for_version(ModelVersion.V3_5, **common)
-model.fit(X_train, y_train)
-record("TabPFN 3.5", model.predict(X_test))
+```console
+TabPFN 3.5: R²=0.8957
+TabPFN 3: R²=0.8836
 ```
 
 ## Compare
@@ -217,5 +220,6 @@ display(pd.DataFrame(results).set_index("Model").round(4))
                           R² ↑  RMSE ↓   MAE ↓
 Model
 XGBoost (5-min tuning)  0.8355  0.1784  0.0998
+TabPFN 3.5              0.8957  0.1420  0.0614
 TabPFN 3                0.8836  0.1500  0.0701
 ```
