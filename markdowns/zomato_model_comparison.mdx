@@ -36,14 +36,13 @@ Predict Zomato restaurant ratings from structured fields and text. All three mod
 TabPFN handles raw text through the staging API. XGBoost treats every string column, including text, as a native categorical feature. This uses the Zomato dataset from [MulTaBench](https://github.com/alanarazi7/MulTaBench), with one smaller split and different preprocessing; scores are not the five-fold leaderboard results.
 
 ## Setup
-Use a CPU runtime and a staging API token. Set `TABPFN_CLIENT_API_URL` **before importing the client**. The client revision below supports `ModelVersion.V3_5`; staging models may change before release.
+Use a CPU runtime and a staging API token with TabPFN 3.5 enabled. Set `TABPFN_CLIENT_API_URL` **before importing the client**. The client revision below supports `ModelVersion.V3_5`; staging models may change before release.
 
 ```python
 %pip install -q "tabpfn-client @ git+https://github.com/PriorLabs/tabpfn-client.git@1227e3f07ec8538637c4fbb728c8eba1931dd9fc" "xgboost==2.1.4" "optuna==4.9.0" "scikit-learn==1.6.1" "pandas==2.3.3"
 ```
 
 ```python
-import gc
 import os
 import time
 from getpass import getpass
@@ -68,6 +67,10 @@ from tabpfn_client.api_models import ModelVersion
 SEED = 42
 DEVICE = "cpu"
 print("TabPFN: raw text via staging; XGBoost: native categories on CPU")
+```
+
+```console
+TabPFN: raw text via staging; XGBoost: native categories on CPU
 ```
 
 ## Load and split
@@ -99,24 +102,27 @@ features["approx cost(for two people)"] = pd.to_numeric(
 print(f"Train: {len(train):,} (including {len(val_idx):,} validation); test: {len(test):,}")
 ```
 
+```console
+Train: 10,000 (including 1,000 validation); test: 2,000
+```
+
 ```python
 X_train, X_test = features.iloc[:len(train)], features.iloc[len(train):]
 results = []
 predictions = {}
 
-def record(name, prediction, seconds):
+def record(name, prediction):
     predictions[name] = prediction
     results.append({
         "Model": name,
         "R² ↑": r2_score(y_test, prediction),
         "RMSE ↓": root_mean_squared_error(y_test, prediction),
         "MAE ↓": mean_absolute_error(y_test, prediction),
-        "Model seconds": seconds,
     })
 ```
 
 ## XGBoost: native categorical features
-Treat every string column, including reviews, as a pandas category and set `enable_categorical=True`. Categories come from the inner training set; unseen validation/test values become missing. Numeric missing values are handled natively. There is no text embedding, TF-IDF, or one-hot encoding.
+Treat every string column, including reviews, as a pandas category and set `enable_categorical=True`. Categories come from the inner training set; unseen validation/test values become missing. Numeric missing values are handled natively.
 
 ```python
 preprocess_start = time.perf_counter()
@@ -130,7 +136,11 @@ preprocess_seconds = time.perf_counter() - preprocess_start
 print(f"XGBoost: {len(cat_cols)} categorical columns; preprocessing: {preprocess_seconds:.1f}s")
 ```
 
-Optuna selects hyperparameters by validation RMSE; early stopping selects the tree count. A callback stops the active trial at the 300-second deadline (checked after each boosting iteration). Refit on all 10,000 training rows. Refitting and prediction are outside the tuning budget but included in model time.
+```console
+XGBoost: 13 categorical columns; preprocessing: 0.4s
+```
+
+Optuna selects hyperparameters by validation RMSE; early stopping selects the tree count. A callback stops the active trial at the 300-second deadline (checked after each boosting iteration). Refit on all 10,000 training rows. Refitting and prediction are outside the tuning budget.
 
 ```python
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -168,30 +178,44 @@ best_params = dict(study.best_params, n_estimators=study.best_trial.user_attrs["
 model = xgb.XGBRegressor(**xgb_common, **best_params)
 model.fit(X_train_xgb, y_train, verbose=False)
 prediction = model.predict(X_test_xgb)
-record("XGBoost (5-min tuning)", prediction, time.perf_counter() - start)
+record("XGBoost (5-min tuning)", prediction)
 print(f"Search: {tuning_seconds:.1f}s; trials: {len(study.trials)}; trees: {best_params['n_estimators']}")
 print(best_params)
 ```
 
+```console
+Search: 301.4s; trials: 27; trees: 357
+{'max_depth': 9, 'learning_rate': 0.05412239278765842, 'min_child_weight': 1.0231860371088157, 'subsample': 0.9502760624272271, 'colsample_bytree': 0.8081445839369573, 'reg_alpha': 3.365484610918805e-08, 'reg_lambda': 0.5497054362823262, 'n_estimators': 357}
+```
+
 ## TabPFN 3.5 and TabPFN 3
-Pass the original columns, including review text, directly to the client. Staging handles text processing. Use `ModelVersion` to select each version, with eight ensemble members and no tuning. Times include uploads, server execution, and network round trips.
+Pass the original columns, including review text, directly to the client. Staging handles text processing. Use `ModelVersion` to select each version, with eight ensemble members and no tuning.
 
 ```python
 common = dict(n_estimators=8, random_state=SEED)
-for name, version in [("TabPFN 3.5", ModelVersion.V3_5), ("TabPFN 3", ModelVersion.V3)]:
-    model = TabPFNRegressor.create_default_for_version(version, **common)
-    start = time.perf_counter()
-    model.fit(X_train, y_train)
-    prediction = model.predict(X_test)
-    record(name, prediction, time.perf_counter() - start)
-    print(f"{name}: R²={results[-1]['R² ↑']:.4f}")
-    del model
-    _ = gc.collect()
+model = TabPFNRegressor.create_default_for_version(ModelVersion.V3, **common)
+model.fit(X_train, y_train)
+record("TabPFN 3", model.predict(X_test))
+```
+
+**Pending:** the staging account returned HTTP 403 for TabPFN 3.5 ("not enabled for your account"). The call below is ready; saved scores currently cover TabPFN 3 and XGBoost only.
+
+```python
+model = TabPFNRegressor.create_default_for_version(ModelVersion.V3_5, **common)
+model.fit(X_train, y_train)
+record("TabPFN 3.5", model.predict(X_test))
 ```
 
 ## Compare
-R² is higher-is-better; RMSE and MAE are in rating points. This is one fixed split, not a significance claim. TabPFN times include remote text processing and network time; XGBoost runs locally on CPU and treats text as category labels.
+R² is higher-is-better; RMSE and MAE are in rating points. This is one fixed split, not a significance claim. TabPFN handles text remotely; XGBoost treats text as category labels on CPU.
 
 ```python
 display(pd.DataFrame(results).set_index("Model").round(4))
+```
+
+```console
+                          R² ↑  RMSE ↓   MAE ↓
+Model
+XGBoost (5-min tuning)  0.8355  0.1784  0.0998
+TabPFN 3                0.8836  0.1500  0.0701
 ```
