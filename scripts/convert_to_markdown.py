@@ -181,6 +181,13 @@ def emit_attachment_images(cell: dict, slug: str, text: str) -> str:
         return text
 
     for name, data in attachments.items():
+        if "image/svg+xml" in data:
+            payload = data["image/svg+xml"]
+            if isinstance(payload, list):
+                payload = "".join(payload)
+            # SVG MIME payloads are XML text, unlike base64-encoded raster images.
+            write_visual(slug, name, payload.encode("utf-8"))
+            continue
         for mime in IMAGE_MIME_EXTENSIONS:
             if mime in data:
                 payload = data[mime]
