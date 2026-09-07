@@ -99,11 +99,11 @@ Here each table is produced by
 2. drawing a **random neural network** $f$ (random depth, width, activation, sparse weights) and computing $f(x)$ plus noise,
 3. cutting the scalar output at random quantiles into 2 or 3 **classes**, and shuffling the class ids.
 
-Every call yields a different function, so the model can never memorise. It has to learn the *algorithm*:
-"look at the labelled rows, infer the underlying function, predict the unlabelled rows".
+Every call yields a different function, so the model can never memorize. It has to learn the *algorithm*:
+"look at the labeled rows, infer the underlying function, predict the unlabeled rows".
 
 The generator returns exactly one dictionary per training step:
-`x` (batch, rows, features), `y` (batch, rows) and the index that separates the labelled "train" rows from the
+`x` (batch, rows, features), `y` (batch, rows) and the index that separates the labeled "train" rows from the
 "test" rows the model must predict.
 
 ![The prior: sample inputs, random MLP, cut into classes, split](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/pretrain_nanotabpfn/prior_generation.png)
@@ -136,7 +136,7 @@ def sample_prior_batch(batch_size, num_rows=NUM_ROWS, num_features=NUM_FEATURES,
     f = f + noise_std * torch.randn(B, num_rows, generator=gen)
     f = (f - f.mean(1, keepdim=True)) / (f.std(1, keepdim=True) + 1e-8)
 
-    # --- 3. discretise into classes via random quantile cuts, then shuffle class ids
+    # --- 3. discretize into classes via random quantile cuts, then shuffle class ids
     num_classes = rint(2, max_classes, B)
     q = 0.15 + 0.7 * torch.rand(B, max_classes - 1, generator=gen)
     q = q.sort(dim=1).values
@@ -147,7 +147,7 @@ def sample_prior_batch(batch_size, num_rows=NUM_ROWS, num_features=NUM_FEATURES,
     perm = torch.rand(B, max_classes, generator=gen).argsort(dim=1)
     y = torch.gather(perm, 1, y)
 
-    # --- how many rows are labelled context; the rest must be predicted
+    # --- how many rows are labeled context; the rest must be predicted
     train_test_split_index = rint(10, num_rows - 3).item()
     return dict(x=x, y=y.float(), train_test_split_index=train_test_split_index)
 
@@ -163,7 +163,7 @@ def prior_iterator(num_steps, batch_size, seed, device):
 t0 = time.time()
 demo = sample_prior_batch(BATCH_SIZE, gen=torch.Generator().manual_seed(0))
 print(f"generated {BATCH_SIZE} tables of shape {tuple(demo['x'].shape[1:])} in {1000 * (time.time() - t0):.1f} ms")
-print("labelled rows:", demo["train_test_split_index"], "| class counts of table 0:", torch.bincount(demo["y"][0].long()).tolist())
+print("labeled rows:", demo["train_test_split_index"], "| class counts of table 0:", torch.bincount(demo["y"][0].long()).tolist())
 ```
 
 ```console
@@ -171,7 +171,7 @@ generated 50 tables of shape (50, 3) in 1.5 ms
 labelled rows: 18 | class counts of table 0: [32, 0, 18]
 ```
 
-Let's look at a few synthetic tables. Each panel is one dataset: the first two features on the axes, colour is the class.
+Let's look at a few synthetic tables. Each panel is one dataset: the first two features on the axes, color is the class.
 Notice how different the decision regions are from table to table. That variety is what the model has to cope with.
 
 ```python
@@ -200,7 +200,7 @@ the target is unknown and gets padded with the mean of the known targets.
 Each transformer block then applies attention in **two directions**:
 
 * **between features** – for every row, cells attend to the other cells of the same row (which columns matter?),
-* **between datapoints** – for every column, rows attend to the *labelled* rows (which training examples are similar to me?).
+* **between datapoints** – for every column, rows attend to the *labeled* rows (which training examples are similar to me?).
 
 Test rows only ever attend to training rows, never to each other, so predictions are independent of the other test rows.
 Finally a small MLP on the target-cell embedding of each test row produces the class logits.
@@ -406,7 +406,7 @@ number of columns (attention runs over however many cells a row has), so the mod
 *works* there is an empirical question we answer below.
 
 The fourth dataset, [QSAR biodegradation](https://www.openml.org/d/1494) from OpenML, is deliberately harder: 1055 molecules
-described by 41 molecular descriptors, many of them skewed counts, labelled as readily biodegradable or not. We will
+described by 41 molecular descriptors, many of them skewed counts, labeled as readily biodegradable or not. We will
 return to it at the end.
 
 ```python
@@ -457,14 +457,14 @@ qsar_biodeg    train (527, 41)  test (528, 41)  classes 2
 untrained nanoTabPFN ROC AUC: {'iris': 0.504, 'wine': 0.432, 'breast_cancer': 0.04, 'qsar_biodeg': 0.237} | mean 0.303
 ```
 
-An untrained model is at chance level *or worse*: a randomly initialised network is not neutral, it computes some arbitrary
+An untrained model is at chance level *or worse*: a randomly initialized network is not neutral, it computes some arbitrary
 function of the inputs, and on breast cancer that function happens to be anti-correlated with the label. Now let's teach it.
 
 ## Pretraining
 
-The loop is standard supervised learning with a twist: every step samples a fresh batch of tables, feeds the labelled rows
-plus the unlabelled features through the model, and applies cross-entropy on the **test rows only**.
-Because the model sees the labelled rows *inside its input*, minimising this loss means learning to do in-context prediction.
+The loop is standard supervised learning with a twist: every step samples a fresh batch of tables, feeds the labeled rows
+plus the unlabeled features through the model, and applies cross-entropy on the **test rows only**.
+Because the model sees the labeled rows *inside its input*, minimizing this loss means learning to do in-context prediction.
 
 We use AdamW in its *schedule-free* variant so we don't need a learning-rate schedule, plus gradient clipping.
 After every epoch we evaluate on the four real datasets; watch synthetic loss go down and real-data AUC go up.
@@ -514,7 +514,7 @@ def train(model, epochs, steps_per_epoch, batch_size, lr, log_every=5):
     return history
 
 
-torch.manual_seed(SEED)  # same initialisation every time this cell runs
+torch.manual_seed(SEED)  # same initialization every time this cell runs
 model = make_model().to(device)
 history = train(model, EPOCHS, STEPS_PER_EPOCH, BATCH_SIZE, LR)
 ```
@@ -586,13 +586,13 @@ logistic regression                 0.997          0.998          0.989         
 ## Challenge: close the gap on QSAR biodegradation
 
 On iris, wine and breast cancer the pretrained model matches or beats logistic regression without ever training on them.
-On QSAR biodegradation it does not: a plain linear model trained on the 500 labelled molecules is far ahead.
+On QSAR biodegradation it does not: a plain linear model trained on the 500 labeled molecules is far ahead.
 
 Nothing about the dataset is exotic. What is off is the *prior*. Every synthetic table the model has ever seen had
 3 Gaussian features and 50 rows; this dataset has 41 columns of skewed counts and indicator variables, several of them
 irrelevant, and 10 times as many rows. The model is being asked to do inference under a prior that puts almost no
 mass on tables like this one. The training curve says the same thing: the `qsar_biodeg` line rises early, peaks and then
-*drifts down* while the synthetic loss keeps improving. The longer the model specialises to the prior, the worse it fits the
+*drifts down* while the synthetic loss keeps improving. The longer the model specializes to the prior, the worse it fits the
 one dataset the prior does not describe.
 
 **Your task**: change the prior, the training setup or the architecture so that the pretrained model beats logistic
@@ -603,6 +603,8 @@ obvious mismatches.
 ## Ideas to experiment with
 
 Everything in this notebook is a knob. Change one thing, rerun, compare the curve and the scoreboard.
+
+If you outgrow this notebook, the [TFM-Playground](https://github.com/automl/TFM-Playground) has the full toolkit: several pluggable priors (including the TabPFN v1 prior and pre-generated prior dumps), a regression variant, larger training runs with checkpointing and logging, and evaluation on TabArena.
 
 * **Prior**: sample the number of features per table (1 to 10) instead of fixing 3; add a second function family (random tree,
   Gaussian process, small causal graph) and mix them; use non-normal inputs (uniform, log-normal, categorical); add label noise,
@@ -618,5 +620,3 @@ Everything in this notebook is a knob. Change one thing, rerun, compare the curv
 * **nanoTabPFN** – minimal TabPFN v2 re-implementation this notebook is based on: [github.com/automl/nanotabpfn](https://github.com/automl/nanotabpfn)
 * **TFM-Playground** – open playground for tabular foundation models with prior interfaces, pre-generated prior dumps,
   evaluation on TabArena and a regression variant: [github.com/automl/TFM-Playground](https://github.com/automl/TFM-Playground)
-* Hollmann et al., *Accurate predictions on small data with a tabular foundation model*, Nature 2025 (TabPFN v2).
-* Müller et al., *Transformers Can Do Bayesian Inference*, ICLR 2022 (prior-data fitted networks).
