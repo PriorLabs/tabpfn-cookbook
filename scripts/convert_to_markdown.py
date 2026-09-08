@@ -3,15 +3,17 @@
 
 Author blocks and Colab buttons are injected automatically from frontmatter.
 Embedded plot outputs are written to ``visuals/<slug>/`` and inserted into the
-MDX as conversion walks the notebook. The notebook file is not modified.
+MDX as conversion walks the notebook.
 
-Manual markdown image cells that already point at ``../visuals/...`` are left
-as-is (paths are rewritten to raw GitHub URLs). Images embedded as notebook
-cell attachments (``![alt](attachment:name.png)``) are written to
-``visuals/<slug>/name.png`` and referenced the same way, so the notebook stays
-self-contained for Colab and GitHub. If a code cell has both an
-embedded plot and a following manual visuals markdown cell, the file named by
-that markdown cell is refreshed and the markdown cell supplies the MDX image.
+Static images in markdown cells are normalized so they render everywhere,
+including Colab, which ignores cell attachments and cannot resolve relative
+paths. Images embedded as cell attachments (``![alt](attachment:name.png)``)
+are written to ``visuals/<slug>/name.png``, and both attachment references and
+relative ``../visuals/<slug>/...`` references are rewritten in the notebook to
+the raw GitHub URL of that file. The notebook is written back when any
+reference changed. If a code cell has both an embedded plot and a following
+markdown cell pointing at a ``visuals/<slug>/`` image, the file named by that
+markdown cell is refreshed and the markdown cell supplies the MDX image.
 
 For markdown-only recipes, use ``process_markdown.py`` instead.
 """
@@ -28,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from cookbook_utils import (
+    COOKBOOKS_RAW_BASE_URL,
     cell_source,
     discover_slug_paths,
     ensure_colab_url,
@@ -36,6 +39,7 @@ from cookbook_utils import (
     render_output_block,
     transform_markdown_for_mintlify,
     try_split_frontmatter,
+    visual_raw_url,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,9 +55,15 @@ IMAGE_MIME_EXTENSIONS = {
     "image/gif": ".gif",
 }
 
+# Matches both the relative form (``../visuals/<slug>/x.png``) and the raw
+# GitHub URL form the notebooks are normalized to.
 VISUAL_MARKDOWN_REF_RE = re.compile(
-    r"!\[([^\]]*)\]\(\.\./visuals/([^)]+)\)"
+    r"!\[([^\]]*)\]\((?:\.\./visuals/|"
+    + re.escape(f"{COOKBOOKS_RAW_BASE_URL}/visuals/")
+    + r")([^)]+)\)"
 )
+
+RELATIVE_VISUAL_REF_RE = re.compile(r"\]\(\.\./visuals/([^)]+)\)")
 
 ATTACHMENT_REF_RE = re.compile(r"\]\(attachment:([^)]+)\)")
 
@@ -174,12 +184,8 @@ def emit_plot_images(
     return blocks
 
 
-def emit_attachment_images(cell: dict, slug: str, text: str) -> str:
-    """Write cell attachments to ``visuals/<slug>/`` and point the markdown at them."""
-    attachments = cell.get("attachments") or {}
-    if not attachments:
-        return text
-
+def write_attachments(attachments: dict, slug: str) -> None:
+    """Write markdown cell attachments to ``visuals/<slug>/``."""
     for name, data in attachments.items():
         if "image/svg+xml" in data:
             payload = data["image/svg+xml"]
@@ -196,13 +202,61 @@ def emit_attachment_images(cell: dict, slug: str, text: str) -> str:
                 write_visual(slug, name, base64.b64decode(payload))
                 break
 
-    def replace_ref(match: re.Match[str]) -> str:
+
+def normalize_markdown_cell_images(cell: dict, slug: str) -> bool:
+    """Rewrite a markdown cell's static images to raw GitHub URLs, in place.
+
+    Attachments are extracted to ``visuals/<slug>/`` and dropped from the cell.
+    Both ``attachment:name`` and ``../visuals/<slug>/name`` references become
+    ``https://raw.githubusercontent.com/.../visuals/<slug>/name`` so they render
+    in Colab as well as Jupyter and GitHub. Returns True if the cell changed.
+    """
+    text = cell_source(cell)
+    attachments = cell.get("attachments") or {}
+
+    if attachments:
+        write_attachments(attachments, slug)
+
+    def replace_attachment(match: re.Match[str]) -> str:
         name = match.group(1).strip()
         if name not in attachments:
             return match.group(0)
-        return f"](../visuals/{slug}/{name})"
+        return f"]({visual_raw_url(f'{slug}/{name}')})"
 
-    return ATTACHMENT_REF_RE.sub(replace_ref, text)
+    def replace_relative(match: re.Match[str]) -> str:
+        return f"]({visual_raw_url(match.group(1).strip())})"
+
+    new_text = ATTACHMENT_REF_RE.sub(replace_attachment, text)
+    new_text = RELATIVE_VISUAL_REF_RE.sub(replace_relative, new_text)
+
+    changed = new_text != text or bool(attachments)
+    if new_text != text:
+        cell["source"] = new_text.splitlines(keepends=True)
+    if "attachments" in cell:
+        del cell["attachments"]
+    return changed
+
+
+def normalize_notebook_images(notebook: dict, slug: str) -> bool:
+    """Normalize static images in every markdown cell. Returns True if anything changed."""
+    changed = False
+    for cell in notebook.get("cells", []):
+        if cell.get("cell_type") == "markdown":
+            changed |= normalize_markdown_cell_images(cell, slug)
+    return changed
+
+
+def notebook_needs_image_normalization(notebook: dict) -> bool:
+    """True when a markdown cell still uses attachments or relative visuals paths."""
+    for cell in notebook.get("cells", []):
+        if cell.get("cell_type") != "markdown":
+            continue
+        if cell.get("attachments"):
+            return True
+        text = cell_source(cell)
+        if ATTACHMENT_REF_RE.search(text) or RELATIVE_VISUAL_REF_RE.search(text):
+            return True
+    return False
 
 
 def notebook_to_mdx(notebook: dict, *, slug: str) -> str:
@@ -216,7 +270,7 @@ def notebook_to_mdx(notebook: dict, *, slug: str) -> str:
         cell_type = cell.get("cell_type")
 
         if cell_type == "markdown":
-            text = emit_attachment_images(cell, slug, cell_source(cell).strip())
+            text = cell_source(cell).strip()
             if not text:
                 continue
 
@@ -257,16 +311,41 @@ def notebook_to_mdx(notebook: dict, *, slug: str) -> str:
     return f"{frontmatter}\n"
 
 
+def load_notebook(notebook_path: Path) -> dict:
+    return json.loads(notebook_path.read_text(encoding="utf-8"))
+
+
+def write_notebook(notebook_path: Path, notebook: dict) -> None:
+    # Same layout nbformat uses, so the diff is limited to the changed cells.
+    notebook_path.write_text(
+        json.dumps(notebook, indent=1, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+
+
 def convert_notebook_to_mdx(notebook_path: Path) -> str:
-    notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
-    return ensure_colab_url(notebook_to_mdx(notebook, slug=notebook_path.stem), notebook_path.stem)
+    """Return the MDX for a notebook without touching the notebook file.
+
+    Image references are normalized in memory first, so the result matches what
+    ``convert_notebook`` produces once the notebook has been rewritten.
+    """
+    notebook = load_notebook(notebook_path)
+    slug = notebook_path.stem
+    normalize_notebook_images(notebook, slug)
+    return ensure_colab_url(notebook_to_mdx(notebook, slug=slug), slug)
 
 
-def convert_notebook(notebook_path: Path) -> Path:
-    mdx = process_markdown_content(convert_notebook_to_mdx(notebook_path))
-    output_path = MARKDOWNS_DIR / f"{notebook_path.stem}.mdx"
+def convert_notebook(notebook_path: Path) -> tuple[Path, bool]:
+    """Convert a notebook to MDX. Returns the MDX path and whether the notebook was rewritten."""
+    notebook = load_notebook(notebook_path)
+    slug = notebook_path.stem
+    notebook_rewritten = normalize_notebook_images(notebook, slug)
+    if notebook_rewritten:
+        write_notebook(notebook_path, notebook)
+
+    mdx = process_markdown_content(ensure_colab_url(notebook_to_mdx(notebook, slug=slug), slug))
+    output_path = MARKDOWNS_DIR / f"{slug}.mdx"
     output_path.write_text(mdx, encoding="utf-8")
-    return output_path
+    return output_path, notebook_rewritten
 
 
 def main() -> int:
@@ -288,7 +367,12 @@ def main() -> int:
     errors = 0
     for notebook_path in notebooks:
         try:
-            output_path = convert_notebook(notebook_path)
+            output_path, notebook_rewritten = convert_notebook(notebook_path)
+            if notebook_rewritten:
+                print(
+                    f"Rewrote {notebook_path.relative_to(ROOT)} "
+                    "(static image references now point at raw GitHub URLs)"
+                )
             print(f"Wrote {output_path.relative_to(ROOT)}")
         except ValueError as error:
             print(f"  - {notebook_path.name}: {error}", file=sys.stderr)

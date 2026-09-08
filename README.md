@@ -42,11 +42,13 @@ git commit -m "Add <slug> cookbook"
 ```
 
 
-**Plots and images:** embedded chart outputs are extracted automatically on convert. Images pasted into a markdown cell as attachments (`![alt](attachment:name.png)`) are extracted to `visuals/<slug>/name.png` as well, and keep rendering in Colab and on GitHub. You can also add files under `visuals/<slug>/` and reference them from a markdown cell:
+**Plots and images:** embedded chart outputs are extracted automatically on convert. For static images, either paste them into a markdown cell (Jupyter stores them as attachments, `![alt](attachment:name.png)`) or add a file under `visuals/<slug>/` and reference it as `![alt](../visuals/<slug>/name.png)`. On convert, attachments are extracted to `visuals/<slug>/name.png` and both forms are rewritten **in the notebook** to the raw GitHub URL of that file:
 
 ```markdown
-![My chart](../visuals/<slug>/my-chart.png)
+![My chart](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/<slug>/my-chart.png)
 ```
+
+This is required because Colab ignores cell attachments and cannot resolve relative paths, so those forms show as broken images there. Validation fails if a notebook still contains them. The URL points at `main`, so images in a new cookbook render in Colab once the PR is merged; reviewers can view the files in the PR diff under `visuals/`.
 
 ### Markdown-only recipe
 
