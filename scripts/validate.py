@@ -10,7 +10,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from convert_to_markdown import convert_notebook_to_mdx
+from convert_to_markdown import (
+    convert_notebook_to_mdx,
+    load_notebook,
+    notebook_needs_image_normalization,
+)
 from cookbook_utils import (
     MAX_FEATURED_COOKBOOKS,
     author_block_is_current,
@@ -94,10 +98,14 @@ def all_markdown_paths() -> list[Path]:
 
 def check_notebooks_converted() -> bool:
     stale: list[str] = []
+    unnormalized: list[str] = []
 
     for notebook_path in sorted(NOTEBOOKS_DIR.glob("*.ipynb")):
         markdown_name = f"{notebook_path.stem}.mdx"
         markdown_path = MARKDOWNS_DIR / markdown_name
+
+        if notebook_needs_image_normalization(load_notebook(notebook_path)):
+            unnormalized.append(notebook_path.name)
 
         try:
             expected = process_markdown_content(convert_notebook_to_mdx(notebook_path))
@@ -113,19 +121,28 @@ def check_notebooks_converted() -> bool:
         if actual != expected:
             stale.append(markdown_name)
 
-    if not stale:
-        return True
+    if unnormalized:
+        print(
+            "Notebook markdown cells use image attachments or relative visuals paths, "
+            "which do not render in Colab.\n"
+            "Run: uv run python scripts/convert_to_markdown.py --all\n"
+            "Then commit the rewritten notebooks and any new files under visuals/.",
+            file=sys.stderr,
+        )
+        for name in unnormalized:
+            print(f"  - notebooks/{name}", file=sys.stderr)
 
-    print(
-        "Generated markdown is out of date.\n"
-        "Run: uv run python scripts/convert_to_markdown.py --all\n"
-        "Then commit the updated files under markdowns/.",
-        file=sys.stderr,
-    )
-    for name in stale:
-        print(f"  - markdowns/{name}", file=sys.stderr)
+    if stale:
+        print(
+            "Generated markdown is out of date.\n"
+            "Run: uv run python scripts/convert_to_markdown.py --all\n"
+            "Then commit the updated files under markdowns/.",
+            file=sys.stderr,
+        )
+        for name in stale:
+            print(f"  - markdowns/{name}", file=sys.stderr)
 
-    return False
+    return not stale and not unnormalized
 
 
 def check_featured_limit() -> bool:
