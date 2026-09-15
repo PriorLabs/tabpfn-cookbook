@@ -208,7 +208,7 @@ def record(name, prediction):
     })
 ```
 
-## Fit both TabPFN versions, with and without thinking
+## Fit both TabPFN versions, with and without Thinking
 
 Pass the prepared columns, including the text fields, directly to the client. For TabPFN, keep the first 1,000 characters of each review; all other fields remain unchanged. XGBoost uses the full reviews. Every configuration uses all training plus validation rows and eight ensemble members. The API handles text processing.
 
