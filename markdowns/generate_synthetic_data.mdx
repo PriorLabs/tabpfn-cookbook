@@ -36,7 +36,7 @@ Tabular data is everywhere: spreadsheets, customer records, financial logs, medi
 
 Common tools include scikit-learn's [`make_*`](https://scikit-learn.org/stable/datasets/sample_generators.html) functions, [`Faker`](https://faker.readthedocs.io/) for rule-based generation, and GAN-based methods like [CTGAN](https://github.com/sdv-dev/CTGAN) or [TabGAN](https://github.com/Diyago/Tabular-data-generation). These are powerful but often complex to set up. TabPFN is a foundation model specialised for tabular data, and its unsupervised tools let us generate a look-alike table without training a GAN or building a simulation.
 
-In this notebook we take an existing dataset (scikit-learn's Breast Cancer table) as the source, fit TabPFN's unsupervised model on it, and sample new rows that share its column distributions and correlations. The result is a standalone synthetic table that can stand in for the real one (for a demo, a test fixture, or to extend the training set) which we then compare against the original with [`table-evaluator`](https://github.com/Baukebrenninkmeijer/Table-Evaluator).
+In this notebook we take an existing dataset (scikit-learn's Breast Cancer table) as the source, fit TabPFN's unsupervised model on it, and sample new rows that share its column distributions and correlations. The result is a standalone synthetic table that can stand in for the real one (for a demo, a test fixture, or to extend the training set) which we then compare against the original with a few fidelity plots.
 
 You can use this approach to:
 
@@ -46,12 +46,12 @@ You can use this approach to:
 
 ## Setup
 
-*Installing TabPFN, its extensions, and `table-evaluator`.*
+*Installing TabPFN, its extensions, and seaborn.*
 
-The unsupervised synthetic-data helpers live in `tabpfn_extensions`, and `table-evaluator` provides the visual fidelity checks we use at the end.
+The unsupervised synthetic-data helpers live in `tabpfn_extensions`; seaborn and scikit-learn draw the fidelity plots at the end.
 
 ```python
-!pip install -U tabpfn tabpfn-client tabpfn_extensions "table-evaluator>=1.9" "dython>=0.7" scikit-learn "seaborn>=0.13"
+!pip install -U tabpfn tabpfn-client tabpfn_extensions scikit-learn "seaborn>=0.13"
 ```
 
 ## Imports and Data
@@ -126,40 +126,40 @@ synthetic.head()
 ```
 
 ```console
-   mean radius  mean texture  mean perimeter   mean area  mean smoothness  \
-0    13.363407     16.441288       85.516998  553.198303         0.082179
-1    12.619973     15.794920       81.974686  483.532196         0.087885
-2    15.422915     14.619908      100.734337  719.590454         0.113079
-3    12.546910     16.986845       80.002007  489.896667         0.072575
-4    11.738303     16.127644       75.250076  426.929626         0.101015
+   mean radius  mean texture  mean perimeter    mean area  mean smoothness  \
+0    19.903595     26.502161      128.942184  1235.166504         0.096553
+1    12.146170     14.239326       77.204369   451.148529         0.078844
+2    13.693434     23.262606       90.649910   563.356445         0.112994
+3    18.486366     26.499252      120.000671  1058.482666         0.082668
+4    12.801287     25.754616       82.406975   500.628143         0.113541
 
    mean compactness  mean concavity  mean concave points  mean symmetry  \
-0          0.061605        0.066697             0.040980       0.151968
-1          0.111782        0.053319             0.030360       0.163469
-2          0.133238        0.129874             0.071804       0.187609
-3          0.046438        0.023193             0.014958       0.141472
-4          0.066207        0.025876             0.025950       0.181918
+0          0.078243        0.134940             0.081050       0.177620
+1          0.052200        0.017760             0.014428       0.160011
+2          0.181681        0.175739             0.075272       0.183574
+3          0.107710        0.105232             0.055753       0.159127
+4          0.082443        0.017421             0.023415       0.213717
 
    mean fractal dimension  ...  worst radius  worst texture  worst perimeter  \
-0                0.056566  ...     14.807053      20.372873        94.949722
-1                0.066643  ...     13.648538      19.480104        89.532341
-2                0.066193  ...     18.021919      19.117395       119.698105
-3                0.056971  ...     13.958496      22.080626        88.770744
-4                0.062224  ...     12.666892      22.931154        81.368088
+0                0.054020  ...     23.023104      32.658436       148.710709
+1                0.061478  ...     12.924338      19.307337        83.267685
+2                0.075747  ...     15.432154      32.553181       101.147064
+3                0.058383  ...     21.179552      30.579182       138.042175
+4                0.064066  ...     13.893790      29.936686        89.816132
 
-   worst area  worst smoothness  worst compactness  worst concavity  \
-0  682.556335          0.115120           0.122154         0.240092
-1  577.266418          0.125912           0.325796         0.203869
-2  961.645325          0.169212           0.378812         0.442507
-3  603.202209          0.092452           0.143293         0.108836
-4  489.277863          0.137176           0.143374         0.092852
+    worst area  worst smoothness  worst compactness  worst concavity  \
+0  1629.686646          0.111088           0.141686         0.333584
+1   508.845581          0.099757           0.083999         0.036157
+2   684.368591          0.176672           0.432907         0.610035
+3  1388.463867          0.100403           0.182912         0.261013
+4   597.608948          0.121169           0.139316         0.068041
 
    worst concave points  worst symmetry  worst fractal dimension
-0              0.096336        0.218800                 0.072447
-1              0.101295        0.241521                 0.103268
-2              0.173838        0.300495                 0.103944
-3              0.063029        0.264225                 0.074134
-4              0.079801        0.275973                 0.077098
+0              0.142335        0.265637                 0.068462
+1              0.017527        0.204648                 0.067547
+2              0.183725        0.306758                 0.121596
+3              0.091476        0.227975                 0.067705
+4              0.055712        0.277136                 0.072171
 
 [5 rows x 30 columns]
 ```
@@ -168,27 +168,43 @@ synthetic.head()
 
 ## Comparing Real vs. Synthetic
 
-*Checking fidelity with `TableEvaluator`.*
+*Checking fidelity on three levels.*
 
-A synthetic table is only useful if it behaves like the real thing. `TableEvaluator` compares the two side by side and reports on distribution overlap, correlation structure, and low-dimensional geometry. We call the three plots we care about directly (distributions, correlation difference, PCA) instead of `visual_evaluation`, which produces a much larger figure grid.
+A synthetic table is only useful if it behaves like the real thing. We compare the two side by side on three levels: the distribution of each column, the correlation structure between columns, and the low-dimensional geometry of the rows. The plots use pandas, seaborn, and scikit-learn only, so nothing extra needs to be installed.
 
 ```python
-from table_evaluator import TableEvaluator
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 
 real = pd.DataFrame(data.data, columns=data.feature_names)
-fake = pd.read_csv("synthetic.csv")
+fake = pd.read_csv("synthetic.csv")[real.columns]
 
-table_evaluator = TableEvaluator(real, fake)
+print(f"real rows: {len(real)} | synthetic rows: {len(fake)} | columns: {real.shape[1]}")
+```
+
+```console
+real rows: 569 | synthetic rows: 762 | columns: 30
 ```
 
 ### Distributions
 
 *Do the synthetic columns look like the real ones?*
 
-The per-feature histograms show how closely each synthetic column tracks the real distribution. A close overlap means the marginals have been preserved.
+The per-feature density curves show how closely each synthetic column tracks the real distribution. A close overlap means the marginals have been preserved.
 
 ```python
-table_evaluator.plot_distributions()
+fig, axes = plt.subplots(6, 5, figsize=(16, 15))
+for ax, column in zip(axes.flat, real.columns):
+    sns.kdeplot(real[column], ax=ax, label="real", fill=True, alpha=0.4)
+    sns.kdeplot(fake[column], ax=ax, label="synthetic", fill=True, alpha=0.4)
+    ax.set_title(column, fontsize=9)
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+axes.flat[0].legend()
+fig.tight_layout()
+plt.show()
 ```
 
 ![Distributions](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/generate_synthetic_data/plot-02.png)
@@ -200,7 +216,19 @@ table_evaluator.plot_distributions()
 TabPFN samples each column conditional on the others, so we care about more than just marginals. The correlation-difference heatmap highlights where the synthetic table's feature-to-feature relationships depart from the real table. Small values mean the joint structure held up.
 
 ```python
-table_evaluator.plot_correlation_difference()
+corr_diff = real.corr() - fake.corr()
+limit = corr_diff.abs().to_numpy().max()
+
+fig, ax = plt.subplots(figsize=(11, 9))
+sns.heatmap(corr_diff, cmap="coolwarm", center=0, vmin=-limit, vmax=limit, ax=ax)
+ax.set_title("Correlation difference (real minus synthetic)")
+plt.show()
+
+print(f"mean absolute correlation difference: {corr_diff.abs().to_numpy().mean():.3f}")
+```
+
+```console
+mean absolute correlation difference: 0.063
 ```
 
 ![Correlations](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/generate_synthetic_data/plot-03.png)
@@ -209,10 +237,21 @@ table_evaluator.plot_correlation_difference()
 
 *Do the two tables share the same low-dimensional geometry?*
 
-Projecting real and synthetic rows onto the first two principal components gives a quick visual check: overlapping clouds mean the synthetic rows live in the same subspace as the real ones.
+We standardize the features and fit a two-component PCA on the real table, then project both tables onto it. Overlapping clouds mean the synthetic rows live in the same subspace as the real ones.
 
 ```python
-table_evaluator.plot_pca()
+scaler = StandardScaler().fit(real)
+pca = PCA(n_components=2).fit(scaler.transform(real))
+real_2d = pca.transform(scaler.transform(real))
+fake_2d = pca.transform(scaler.transform(fake))
+
+fig, ax = plt.subplots(figsize=(7, 6))
+ax.scatter(real_2d[:, 0], real_2d[:, 1], s=12, alpha=0.5, label="real")
+ax.scatter(fake_2d[:, 0], fake_2d[:, 1], s=12, alpha=0.5, label="synthetic")
+ax.set_xlabel(f"PC1 ({pca.explained_variance_ratio_[0]:.0%} of variance)")
+ax.set_ylabel(f"PC2 ({pca.explained_variance_ratio_[1]:.0%} of variance)")
+ax.legend()
+plt.show()
 ```
 
 ![PCA Projection](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/generate_synthetic_data/plot-04.png)

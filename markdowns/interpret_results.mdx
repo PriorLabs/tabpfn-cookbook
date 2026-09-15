@@ -41,7 +41,7 @@ A strong classifier is only useful in practice if you can explain what it is doi
 `tabpfn_extensions` provides the interpretability helpers used here; `shap` provides the explainer and plots.
 
 ```python
-!pip install tabpfn tabpfn_extensions scikit-learn shap
+!pip install tabpfn tabpfn_extensions scikit-learn shap matplotlib
 ```
 
 ```python
@@ -147,7 +147,7 @@ predict = lambda A: clf.predict_proba(np.asarray(A))[:, 1]
 background = shap.sample(X_train, 50, random_state=42)
 explainer = shap.PermutationExplainer(predict, background)
 
-sv = explainer(X_test, max_evals=2 * len(feature_names) + 1)
+sv = explainer(X_test, max_evals=2 * len(feature_names) + 1, silent=True)
 sv.display_data = X_test.values
 shap.plots.beeswarm(sv, max_display=len(feature_names), show=False)
 
@@ -195,7 +195,7 @@ plt.show()
 ```
 
 ```console
-Partial dependence for: ['Blocked vessels', 'Max heart rate', 'ST depression', 'Cholesterol']
+Partial dependence for: ['Blocked vessels', 'Max heart rate', 'Cholesterol', 'ST depression']
 ```
 
 ![Partial Dependence](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/interpret_results/plot-02.png)
@@ -257,11 +257,11 @@ plt.show()
 
 ```console
 [Highest-risk patient] predicted risk = 100%  (base rate 53%)
-    Blocked vessels    = 3                  raises risk by 16.1 points
-    Chest pain type    = asymptomatic       raises risk by  8.1 points
-    ST slope           = flat               raises risk by  6.2 points
-    Thallium scan      = reversible defect  raises risk by  6.1 points
-    Exercise angina    = yes                raises risk by  4.7 points
+    Blocked vessels    = 2                  raises risk by 12.9 points
+    Thallium scan      = reversible defect  raises risk by  8.1 points
+    ST depression      = 3                  raises risk by  5.6 points
+    Chest pain type    = asymptomatic       raises risk by  4.9 points
+    Sex                = male               raises risk by  4.4 points
 ```
 
 ![Explaining Individual Predictions](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/interpret_results/plot-03.png)
@@ -273,11 +273,11 @@ plt.show()
 
 ```console
 [Lowest-risk patient] predicted risk = 1%  (base rate 53%)
-    Blocked vessels    = 0                  lowers risk by  9.8 points
-    Chest pain type    = non-anginal        lowers risk by  8.9 points
-    ST slope           = upsloping          lowers risk by  7.8 points
-    Sex                = female             lowers risk by  7.7 points
-    Exercise angina    = no                 lowers risk by  4.3 points
+    Blocked vessels    = 0                  lowers risk by 10.9 points
+    Chest pain type    = non-anginal        lowers risk by  9.5 points
+    Sex                = female             lowers risk by  7.0 points
+    Thallium scan      = normal             lowers risk by  5.1 points
+    ST slope           = upsloping          lowers risk by  4.4 points
 ```
 
 ![Explaining Individual Predictions](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/interpret_results/plot-04.png)
@@ -288,12 +288,12 @@ plt.show()
 ```
 
 ```console
-[Borderline patient] predicted risk = 47%  (base rate 53%)
-    Blocked vessels    = 0                  lowers risk by 15.3 points
-    Thallium scan      = reversible defect  raises risk by 14.9 points
-    Chest pain type    = typical angina     lowers risk by 13.2 points
-    ST slope           = flat               raises risk by  7.2 points
-    Sex                = male               raises risk by  5.5 points
+[Borderline patient] predicted risk = 50%  (base rate 53%)
+    Thallium scan      = reversible defect  raises risk by 10.8 points
+    Chest pain type    = non-anginal        lowers risk by 10.3 points
+    ST slope           = upsloping          lowers risk by  9.5 points
+    Blocked vessels    = 1                  raises risk by  7.7 points
+    Sex                = male               raises risk by  5.3 points
 ```
 
 ![Explaining Individual Predictions](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/interpret_results/plot-05.png)

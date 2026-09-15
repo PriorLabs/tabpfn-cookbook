@@ -52,7 +52,7 @@ the same quantity: expected annual claim cost.
 **Bottom line up front:**
 
 - **Better risk ranking, zero feature engineering.** Straight from the 9-column raw dataframe, TabPFN
-  reaches an exposure-weighted **Gini of ~0.32 vs ~0.31** for the best hand-built GLM, better
+  reaches an exposure-weighted **Gini of ~0.34 vs ~0.31** for the best hand-built GLM, better
   separation of safe from risky policies, which is what drives pricing.
 - **A rich conditional cost distribution per policy.** Given that a claim occurs, TabPFN returns the
   expected cost and any quantile, with a shape that adapts per policy, handy for understanding the
@@ -75,6 +75,9 @@ defined in the Metrics section below).
 
 ```python
 import warnings
+
+# tabpfn-client warns that the full-output criterion needs the local tabpfn package; not needed here.
+warnings.filterwarnings("ignore", message="Optional dependencies 'tabpfn' and 'torch'")
 
 import numpy as np
 import pandas as pd
@@ -169,25 +172,25 @@ df[FEATURES + ["Exposure", "ClaimNb", "ClaimAmount", "PurePremium", "Frequency",
 ```console
 678,013 policies | 96.3% have ZERO claim amount | 24,944 claims
         VehAge  DrivAge VehBrand  VehPower     VehGas Region Area  BonusMalus  \
-147894       1       21       B3         7   'Diesel'    R53    C          90
-396360      18       78      B10         7  'Regular'    R93    E          50
+298185       5       31       B2         7   'Diesel'    R24    B          51
+135927      12       27       B2         4  'Regular'    R24    C          90
+75668        3       46       B1         6   'Diesel'    R24    A          50
 231941      13       21       B1         4   'Diesel'    R24    A         140
-270621      14       18       B2         4  'Regular'    R82    D         100
-609318       2       33      B12        10  'Regular'    R94    D          80
+568614       9       72       B1         5   'Diesel'    R24    C          50
 
         Density  Exposure  ClaimNb  ClaimAmount   PurePremium  Frequency  \
-147894      108      0.85        1     200000.0  2.352941e+05   1.176471
-396360     4762      0.58        1     200000.0  3.448276e+05   1.724138
+298185       60      0.42        1     200000.0  4.761905e+05   2.380952
+135927      319      1.00        1     200000.0  2.000000e+05   1.000000
+75668        10      0.75        1     200000.0  2.666667e+05   1.333333
 231941       37      0.16        2     200000.0  1.250000e+06  12.500000
-270621      863      0.32        1     200000.0  6.250000e+05   3.125000
-609318      645      0.53        2     200000.0  3.773585e+05   3.773585
+568614      405      0.36        1     200000.0  5.555556e+05   2.777778
 
         AvgClaimAmount
-147894        200000.0
-396360        200000.0
+298185        200000.0
+135927        200000.0
+75668         200000.0
 231941        100000.0
-270621        200000.0
-609318        100000.0
+568614        200000.0
 ```
 
 ```python
@@ -309,10 +312,10 @@ scores(pp_glm_tweedie)
 
 ```console
 GLM design matrix: 75 engineered columns from 9 raw features
-{'Gini (exposure)  up': 0.28834550102009937,
- 'D2 (Tweedie 1.9)  up': 0.013735296391564011,
- 'Tweedie dev 1.9  down': 33.878261888130645,
- 'Tweedie dev 1.5  down': 76.40873870601743}
+{'Gini (exposure)  up': 0.2883310924949033,
+ 'D2 (Tweedie 1.9)  up': 0.013734740755400598,
+ 'Tweedie dev 1.9  down': 33.87828097427191,
+ 'Tweedie dev 1.5  down': 76.40871982023906}
 ```
 
 ### Two-stage GLM: frequency × severity
@@ -340,10 +343,10 @@ scores(pp_glm_product)
 ```
 
 ```console
-{'Gini (exposure)  up': 0.30667623396467025,
- 'D2 (Tweedie 1.9)  up': 0.014606241449514612,
- 'Tweedie dev 1.9  down': 33.84834486417605,
- 'Tweedie dev 1.5  down': 76.15988353558402}
+{'Gini (exposure)  up': 0.3057401637188083,
+ 'D2 (Tweedie 1.9)  up': 0.014582963672741034,
+ 'Tweedie dev 1.9  down': 33.84914445744429,
+ 'Tweedie dev 1.5  down': 76.16497654067228}
 ```
 
 ## TabPFN
@@ -383,15 +386,15 @@ scores(pp_single_vanilla)
 ```
 
 ```console
-{'Gini (exposure)  up': 0.30680240684438265,
- 'D2 (Tweedie 1.9)  up': -2175.0647170406223,
- 'Tweedie dev 1.9  down': 74747.97597409683,
- 'Tweedie dev 1.5  down': 692.3590850256587}
+{'Gini (exposure)  up': 0.34097615170512585,
+ 'D2 (Tweedie 1.9)  up': -0.053670604189254956,
+ 'Tweedie dev 1.9  down': 36.19365931067585,
+ 'Tweedie dev 1.5  down': 86.095586488555}
 ```
 
-The ranking is already competitive, the Gini lands in the same range as the two stage GLM, but the
-calibration is off: the Tweedie deviance is enormous and D² is deeply negative. TabPFN's
-default target handling is not built for a target that is 96% zeros with a heavy tail on the rest.
+The ranking is already ahead of both GLMs, but the calibration is off: the Tweedie deviance is
+worse than the GLMs' and D² is negative. TabPFN's default target handling is not built for a target
+that is 96% zeros with a heavy tail on the rest.
 
 The fix is the same one the GLMs bake in through their log link: model the target on a **log scale**.
 TabPFN exposes this as a target transform, `1_plus_log` (fit on `log(1 + y)`, invert on output), the
@@ -408,13 +411,14 @@ scores(pp_tabpfn_single)
 ```
 
 ```console
-{'Gini (exposure)  up': 0.3062529264409002,
- 'D2 (Tweedie 1.9)  up': -0.1560920028968369,
- 'Tweedie dev 1.9  down': 39.71184155492424,
- 'Tweedie dev 1.5  down': 98.82921431822498}
+{'Gini (exposure)  up': 0.3484222647927837,
+ 'D2 (Tweedie 1.9)  up': 0.011464666094123888,
+ 'Tweedie dev 1.9  down': 33.956258198437965,
+ 'Tweedie dev 1.5  down': 77.02635242065648}
 ```
 
-Results show that the ranking quality stays intact, while we severely improve the calibration quality.
+The ranking improves slightly, and the calibration now matches the GLMs: D² turns positive and the
+Tweedie deviance lands within 0.1 of the two-stage GLM.
 
 ### Two-stage TabPFN: occurrence × conditional aggregate cost
 
@@ -451,13 +455,15 @@ scores(pp_tabpfn)
 ```
 
 ```console
-{'Gini (exposure)  up': 0.32104571636786383,
- 'D2 (Tweedie 1.9)  up': -0.02263779649804487,
- 'Tweedie dev 1.9  down': 35.127680185355544,
- 'Tweedie dev 1.5  down': 82.20730113027466}
+{'Gini (exposure)  up': 0.33475998106700655,
+ 'D2 (Tweedie 1.9)  up': 0.00879719581154792,
+ 'Tweedie dev 1.9  down': 34.047885990126424,
+ 'Tweedie dev 1.5  down': 76.88584818144315}
 ```
 
-The two-stage TabPFN solution achieves the strongest Gini in this held-out experiment.
+The two-stage TabPFN solution also beats both GLMs on Gini. The single-stage log-target model ranks
+slightly better still; what the decomposition buys is the per-policy conditional cost distribution
+we look at next.
 
 ## Per-policy uncertainty: the conditional cost distribution
 
@@ -526,7 +532,7 @@ plt.show()
 ## Optional: matching the GLM on calibration
 
 The two-stage TabPFN *ranks* well but **under-prices the portfolio**: summed over the test set it
-charges only ~60% of the actual claim cost. The actuarial GLMs handle the portfolio level more
+charges only ~83% of the actual claim cost. The actuarial GLMs handle the portfolio level more
 naturally through their exposure-weighted likelihood and fitted intercept, although their balance
 can still depend on the model and regularization.
 
@@ -574,19 +580,19 @@ scores(pp_tabpfn_recal)
 ```
 
 ```console
-rescale factor c = 1.637
-portfolio balance (predicted / actual): 0.584 -> 0.956
-{'Gini (exposure)  up': 0.32104571636786383,
- 'D2 (Tweedie 1.9)  up': 0.00880833559375449,
- 'Tweedie dev 1.9  down': 34.04750333782467,
- 'Tweedie dev 1.5  down': 77.20614578550321}
+rescale factor c = 1.123
+portfolio balance (predicted / actual): 0.828 -> 0.930
+{'Gini (exposure)  up': 0.33475998106700655,
+ 'D2 (Tweedie 1.9)  up': 0.012591599713535961,
+ 'Tweedie dev 1.9  down': 33.917547949405126,
+ 'Tweedie dev 1.5  down': 76.26418601976408}
 ```
 
 The rescale is easiest to see decile by decile: bin the test policies by predicted premium and plot
-the predicted premium (x) against the actual claim cost (y) in each bin. **Before**, the two-stage
-points sit consistently *above* the diagonal — actual cost exceeds what the model charged, i.e.
-under-pricing; **after** the single constant factor they move substantially closer to it, although
-some decile-level miscalibration remains. The GLM is drawn faintly in both panels for reference, and
+the predicted premium (x) against the actual claim cost (y) in each bin. **Before**, the low-premium
+deciles sit *above* the diagonal — actual cost exceeds what the model charged, i.e. under-pricing —
+while the high-premium deciles are already close to it; **after** the single constant factor the
+whole curve shifts toward the diagonal, although some decile-level miscalibration remains. The GLM is drawn faintly in both panels for reference, and
 the ranking is identical between them — only the level moves.
 
 ```python
@@ -653,22 +659,22 @@ table.round(4)
 
 ```console
                        GLM Tweedie(1.9)  GLM Poisson x Gamma  \
-Gini (exposure)  up              0.2883               0.3067
+Gini (exposure)  up              0.2883               0.3057
 D2 (Tweedie 1.9)  up             0.0137               0.0146
-Tweedie dev 1.9  down           33.8783              33.8483
-Tweedie dev 1.5  down           76.4087              76.1599
+Tweedie dev 1.9  down           33.8783              33.8491
+Tweedie dev 1.5  down           76.4087              76.1650
 
                        TabPFN single-stage  TabPFN two-stage  \
-Gini (exposure)  up                 0.3063            0.3210
-D2 (Tweedie 1.9)  up               -0.1561           -0.0226
-Tweedie dev 1.9  down              39.7118           35.1277
-Tweedie dev 1.5  down              98.8292           82.2073
+Gini (exposure)  up                 0.3484            0.3348
+D2 (Tweedie 1.9)  up                0.0115            0.0088
+Tweedie dev 1.9  down              33.9563           34.0479
+Tweedie dev 1.5  down              77.0264           76.8858
 
                        TabPFN two-stage recal.
-Gini (exposure)  up                     0.3210
-D2 (Tweedie 1.9)  up                    0.0088
-Tweedie dev 1.9  down                  34.0475
-Tweedie dev 1.5  down                  77.2061
+Gini (exposure)  up                     0.3348
+D2 (Tweedie 1.9)  up                    0.0126
+Tweedie dev 1.9  down                  33.9175
+Tweedie dev 1.5  down                  76.2642
 ```
 
 **Lorenz curves.** Policies are sorted safest → riskiest by predicted premium; we plot the cumulative
@@ -718,18 +724,19 @@ plt.show()
 ## Takeaways
 
 - **Better ranking, zero feature engineering.** From the raw 9-column dataframe — strings and all, one
-  `.fit()` / `.predict()` — TabPFN reaches Gini ~0.32 vs ~0.31 for the best GLM. The GLM needed a
+  `.fit()` / `.predict()` — TabPFN reaches Gini ~0.34 vs ~0.31 for the best GLM. The GLM needed a
   hand-built 75-column design matrix (binning, one-hot, log-scaling) and several modeling choices to
   get there.
 - **A rich conditional cost distribution per policy.** Given a positive claim amount, TabPFN gives
   the conditional mean and quantiles with a shape that varies per policy; the Gamma benchmark has a
   constant-CV distribution.
 - **Calibration is a simple adjustment away.** Out of the box TabPFN under-prices the portfolio. A
-  single factor estimated on held-out training data improves the balance from ~0.6 to ~0.96 and
+  single factor estimated on held-out training data improves the balance from ~0.83 to ~0.93 and
   brings Tweedie deviance close to the GLMs, while provably leaving the ranking untouched.
-- **The two-stage split helps TabPFN too.** Occurrence × conditional aggregate cost is better
-  calibrated than a single regressor on the raw zero-inflated amount — the actuarial intuition still
-  pays off.
+- **The two-stage split is optional for accuracy, essential for the distribution.** With the log
+  target transform, a single regressor matches or slightly beats occurrence × conditional aggregate
+  cost on both Gini and calibration. The decomposition is what gives you a per-policy conditional
+  cost distribution and quantiles.
 - **Match the metric to the question.** Judge *ranking* with the exposure-weighted Gini (the headline
   for pricing) and *calibration* with Tweedie deviance / D² and the decile chart. MAE and RMSE are
   actively misleading on a 96%-zero, heavy-tailed target.

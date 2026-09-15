@@ -97,7 +97,7 @@ proba_tabpfn = tabpfn.predict_proba(X_test)[:, 1]
 predict_tabpfn = time.perf_counter() - t0
 results.append(
     {
-        "Model": "TabPFN v3 (client, default)",
+        "Model": "TabPFN 3.5 (client, default)",
         "ROC-AUC": f"{roc_auc_score(y_test, proba_tabpfn):.4f}",
         "Fit time": f"{fit_tabpfn:.2f}s",
         "Predict time": f"{predict_tabpfn:.2f}s",
@@ -188,8 +188,8 @@ print(pd.DataFrame(results).to_string(index=False))
 ```
 
 ```console
-                          Model ROC-AUC Fit time Predict time                                         Notes
-    TabPFN v3 (client, default)  0.8281    0.62s        1.23s                                    hosted API
-    XGBoost (sensible defaults)  0.8142    0.51s        0.01s                              n_estimators=100
-XGBoost (CV-tuned n_estimators)  0.8154    4.78s        0.00s 5-fold CV with early stopping, best_rounds=76
+                          Model ROC-AUC Fit time Predict time                                          Notes
+   TabPFN 3.5 (client, default)  0.8246    4.20s        1.16s                                     hosted API
+    XGBoost (sensible defaults)  0.8099    0.14s        0.00s                               n_estimators=100
+XGBoost (CV-tuned n_estimators)  0.8018    1.07s        0.00s 5-fold CV with early stopping, best_rounds=141
 ```

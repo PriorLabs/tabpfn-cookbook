@@ -51,6 +51,9 @@ import warnings
 warnings.filterwarnings("ignore", message="IProgress not found.*")
 warnings.filterwarnings("ignore", category=FutureWarning)
 
+import urllib.request
+from pathlib import Path
+
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
@@ -59,7 +62,15 @@ from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 from tabpfn import TabPFNRegressor
 
 plt.style.use("seaborn-v0_8-whitegrid")
-panel = pd.read_csv("spare_parts_daily.csv", parse_dates=["date"])
+# Synthetic demand panel shipped with the cookbook (scripts/generate_spare_parts_data.py).
+DATA_PATH = Path("../datasets/forecast_spare_parts_demand/spare_parts_daily.csv")
+if not DATA_PATH.exists():  # not running from a repo checkout, e.g. on Colab
+    DATA_PATH = Path("spare_parts_daily.csv")
+    urllib.request.urlretrieve(
+        "https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/datasets/forecast_spare_parts_demand/spare_parts_daily.csv",
+        DATA_PATH,
+    )
+panel = pd.read_csv(DATA_PATH, parse_dates=["date"])
 print(f"{len(panel):,} rows | {panel['series_id'].nunique()} daily series | "
       f"{panel['date'].min().date()} to {panel['date'].max().date()}")
 ```
@@ -226,10 +237,10 @@ metrics
 ```console
                    MAE  RMSE  WAPE (%)  80% coverage (%)
 strategy
-Product category  1.04  1.61     13.83             86.01
-Global            1.05  1.64     13.94             87.20
-Location          1.08  1.68     14.35             86.31
-Series by series  1.11  1.65     14.79             87.20
+Global            1.04  1.59     13.81             90.48
+Series by series  1.11  1.68     14.79             88.99
+Product category  1.12  1.61     14.86             91.07
+Location          1.12  1.71     14.93             90.18
 ```
 
 ```python

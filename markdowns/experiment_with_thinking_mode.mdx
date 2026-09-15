@@ -41,7 +41,7 @@ Thinking mode runs on the hosted API client (`tabpfn-client`), so this whole not
 *Install, authenticate, and import.*
 
 ```python
-!pip install -q tabpfn-client scikit-learn
+!pip install -q tabpfn-client scikit-learn matplotlib
 ```
 
 ```python
@@ -246,7 +246,7 @@ print(f"ROC AUC: {nat_rows[-1]['roc_auc']:.4f}")
 ```
 
 ```console
-ROC AUC: 0.9883
+ROC AUC: 0.9890
 ```
 
 ### Thinking mode
@@ -265,7 +265,7 @@ print(f"ROC AUC: {nat_rows[-1]['roc_auc']:.4f}")
 ```
 
 ```console
-ROC AUC: 0.9902
+ROC AUC: 0.9910
 ```
 
 ### Results
@@ -279,8 +279,8 @@ show(df_nat, "roc_auc",
 ```console
                          roc_auc      f1  n_features  secs  rel_improve_%
 config
-baseline                  0.9883  0.9230          86   4.6          0.000
-thinking high (roc_auc)   0.9902  0.9339          86  11.6         16.492
+baseline                   0.989  0.9337          86   7.1         0.0000
+thinking high (roc_auc)    0.991  0.9476          86  75.3        18.7323
 ```
 
 ```python
@@ -333,7 +333,7 @@ print(f"ROC AUC: {cpn_rows[-1]['roc_auc']:.4f}")
 ```
 
 ```console
-ROC AUC: 0.8495
+ROC AUC: 0.8640
 ```
 
 ### Thinking mode
@@ -350,7 +350,7 @@ print(f"ROC AUC: {cpn_rows[-1]['roc_auc']:.4f}")
 ```
 
 ```console
-ROC AUC: 0.8535
+ROC AUC: 0.8623
 ```
 
 ### Results
@@ -364,8 +364,8 @@ show(df_cpn, "roc_auc",
 ```console
                          roc_auc      f1  n_features  secs  rel_improve_%
 config
-baseline                  0.8495  0.7216          24   3.0         0.0000
-thinking high (roc_auc)   0.8535  0.7329          24  14.0         2.6523
+baseline                  0.8640  0.7404          24  13.3         0.0000
+thinking high (roc_auc)   0.8623  0.7347          24  74.7        -1.2488
 ```
 
 ```python

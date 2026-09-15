@@ -53,17 +53,20 @@ Relevant resources:
 This example uses the local PyTorch-backed TabPFN implementation because the optimizer refines candidates with gradients (`differentiable_input=True`).
 
 ```python
-%pip install -q -U "tabpfn-extensions[bayesian-optimization]" "tabpfn>=8.1.0" "tqdm>=4.63.0,<=4.67.3" matplotlib
+%pip install -q -U "tabpfn-extensions[bayesian-optimization]" "tabpfn>=8.1.0" matplotlib
 ```
 
 *TabPFN as the surrogate, BoTorch for the benchmark objective, and Matplotlib for a quick comparison plot.*
 
 ```python
+import warnings
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+# botorch triggers a torch.jit deprecation warning on import; it is harmless here.
+warnings.filterwarnings("ignore", category=FutureWarning, message=r".*torch\.jit\.script.*")
 from botorch.test_functions import Rosenbrock
-from tqdm.auto import trange
 
 from tabpfn import TabPFNRegressor
 from tabpfn_extensions.bayesian_optimization import propose_next_point
@@ -106,7 +109,7 @@ def evaluate(unit_x: torch.Tensor) -> torch.Tensor:
 ```
 
 ```console
-Device: cpu
+Device: cuda
 Objective optimum: 0.0000 on [-5.0, -5.0, -5.0, -5.0]..[10.0, 10.0, 10.0, 10.0]
 ```
 
@@ -114,7 +117,7 @@ Objective optimum: 0.0000 on [-5.0, -5.0, -5.0, -5.0]..[10.0, 10.0, 10.0, 10.0]
 
 *The critical switch is `differentiable_input=True`.*
 
-That flag keeps gradients flowing from the acquisition value back into the candidate coordinates during refinement. We use a single estimator to stay close to the upstream example and keep runtime short on CPU.
+That flag keeps gradients flowing from the acquisition value back into the candidate coordinates during refinement. We use a single estimator to stay close to the upstream example and keep runtime short.
 
 Each repeat gets its own surrogate, seeded with that repeat's index, so the runs are independent.
 
@@ -142,7 +145,7 @@ def run_bo(init_x: torch.Tensor, init_y: torch.Tensor, seed: int) -> torch.Tenso
     """Run the loop from a fixed random init and return every observed y."""
     reg = make_surrogate(seed)
     train_x, train_y = init_x.clone(), init_y.clone()
-    for _ in trange(N_BO_STEPS, desc=f"repeat {seed}", leave=False):
+    for _ in range(N_BO_STEPS):
         next_x = propose_next_point(
             reg,
             train_x,
@@ -189,11 +192,11 @@ random_gap = np.array(random_gaps)
 ```
 
 ```console
-repeat 0: TabPFN gap       115 | random search gap      9698
-repeat 1: TabPFN gap     124.9 | random search gap      1806
-repeat 2: TabPFN gap       990 | random search gap      2376
-repeat 3: TabPFN gap      1262 | random search gap      6125
-repeat 4: TabPFN gap     564.6 | random search gap 1.397e+04
+repeat 0: TabPFN gap      4559 | random search gap      9027
+repeat 1: TabPFN gap     307.3 | random search gap      2804
+repeat 2: TabPFN gap      3291 | random search gap      5506
+repeat 3: TabPFN gap     438.2 | random search gap      4762
+repeat 4: TabPFN gap      2761 | random search gap     915.8
 ```
 
 ## Compare Against Random Search
@@ -212,8 +215,8 @@ for name, gaps in [("TabPFN", bo_gap), ("Random search", random_gap)]:
 ```
 
 ```console
-TabPFN         final gap over 5 repeats: mean     611.2 | median     564.6 | best       115
-Random search  final gap over 5 repeats: mean      6795 | median      6125 | best      1806
+TabPFN         final gap over 5 repeats: mean      2271 | median      2761 | best     307.3
+Random search  final gap over 5 repeats: mean      4603 | median      4762 | best     915.8
 ```
 
 ```python
@@ -263,5 +266,5 @@ plt.show()
 ## Takeaways
 
 - `tabpfn-extensions` already provides the Bayesian Optimization loop primitive: `propose_next_point()`
-- On Rosenbrock-4, TabPFN with Bayesian Optimization should close the gap to the optimum faster than random search under the same evaluation budget.
+- On Rosenbrock-4 with this small budget, TabPFN-driven Bayesian Optimization ends with a lower mean and median gap to the optimum than random search, but the separation only appears late in the run and single repeats can go either way. Use a larger evaluation budget and more repeats for a clean comparison.
 - For more background, start with the upstream [example](https://github.com/PriorLabs/tabpfn-extensions/blob/main/examples/bayesian_optimization/bayesian_optimization.py) and the [`tabpfn-extensions` repo](https://github.com/PriorLabs/tabpfn-extensions).
