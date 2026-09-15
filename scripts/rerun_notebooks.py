@@ -64,6 +64,8 @@ MODEL_DEPENDENT_SLUGS = (
     "interpret_results",
     "decoder_readout",
 )
+# Not in the list: time_series_interpretability. tabpfn-time-series loads its
+# own time-series checkpoint, so the default model release does not affect it.
 
 # Packages the in-kernel executor needs on top of the notebook's own. Colab
 # ships ipywidgets, so tqdm and friends expect it. Nothing else is added on
