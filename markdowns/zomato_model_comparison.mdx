@@ -1,0 +1,445 @@
+---
+title: Predict restaurant ratings with TabPFN 3.5
+description: Compare TabPFN 3.5 and TabPFN 3 with and without thinking, plus default
+  and tuned XGBoost with TF-IDF on Zomato text and tabular data.
+icon: utensils
+cookbookTags:
+- benchmark
+- regression
+- text
+authors:
+- name: Eliott Kalfon
+  linkedin: https://www.linkedin.com/in/eliott-kalfon/
+colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/zomato_model_comparison.ipynb
+---
+{/* cookbook-meta:start process_markdown.py */}
+<div className="cookbook-meta">
+{/* cookbook-authors:start process_markdown.py */}
+<div className="cookbook-authors">
+  <div className="cookbook-author-bar">
+    <span className="cookbook-author-by">By</span>
+    <span className="cookbook-author-list"><span className="cookbook-author-entry"><span className="cookbook-author-name">Eliott Kalfon</span><span className="cookbook-author-links"><a href="https://www.linkedin.com/in/eliott-kalfon/" className="cookbook-author-icon-link" aria-label="LinkedIn" target="_blank" rel="noopener noreferrer"><svg className="cookbook-author-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 1 1 0-4.124 2.062 2.062 0 0 1 0 4.124zM7.119 20.452H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg></a></span></span></span>
+  </div>
+</div>
+{/* cookbook-authors:end process_markdown.py */}
+{/* cookbook-colab:start process_markdown.py */}
+<div className="cookbook-colab">
+  <a href="https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/zomato_model_comparison.ipynb" className="cookbook-colab-button" target="_blank" rel="noopener noreferrer">
+    <svg className="cookbook-colab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="#F9AB00" d="M16.9414 4.9757a7.033 7.033 0 0 0-4.9308 2.0646 7.033 7.033 0 0 0-.1232 9.8068l2.395-2.395a3.6455 3.6455 0 0 1 5.1497-5.1478l2.397-2.3989a7.033 7.033 0 0 0-4.8877-1.9297zM7.07 4.9855a7.033 7.033 0 0 0-4.8878 1.9316l2.3911 2.3911a3.6434 3.6434 0 0 1 5.0227.1271l1.7341-2.9737-.0997-.0802A7.033 7.033 0 0 0 7.07 4.9855zm15.0093 2.1721l-2.3892 2.3911a3.6455 3.6455 0 0 1-5.1497 5.1497l-2.4067 2.4068a7.0362 7.0362 0 0 0 9.9456-9.9476zM1.932 7.1674a7.033 7.033 0 0 0-.002 9.6816l2.397-2.397a3.6434 3.6434 0 0 1-.004-4.8916zm7.664 7.4235c-1.38 1.3816-3.5863 1.411-5.0168.1134l-2.397 2.395c2.4693 2.3328 6.263 2.5753 9.0072.5455l.1368-.1115z"/></svg>
+    <span className="cookbook-colab-label">Open in Colab</span>
+  </a>
+</div>
+{/* cookbook-colab:end process_markdown.py */}
+</div>
+{/* cookbook-meta:end process_markdown.py */}
+Restaurant listings combine structured fields, such as votes and location, with free text, such as customer reviews. In this cookbook, we predict Zomato ratings with TabPFN 3.5 and TabPFN 3, each with and without thinking mode, and default and tuned XGBoost.
+
+We use all 41,665 rated listings, with the same source columns and data splits for every model. TabPFN accepts the text directly. For XGBoost, we turn text into TF-IDF features and tune hyperparameters for five minutes on a separate validation set.
+
+## Setup
+
+TabPFN runs through the API. In Colab, add `TABPFN_TOKEN` to your secrets using the key icon. Locally, set the `TABPFN_TOKEN` environment variable or use the client’s existing authentication.
+
+```python
+%pip install -q tabpfn-client "xgboost==2.1.4" "optuna==4.9.0" "scikit-learn==1.6.1" "pandas==2.3.3" "matplotlib==3.10.1"
+```
+
+```python
+import gc
+import os
+import time
+from pathlib import Path
+from urllib.request import urlretrieve
+from zipfile import ZipFile
+
+import matplotlib.pyplot as plt
+import numpy as np
+import optuna
+import pandas as pd
+import xgboost as xgb
+from IPython.display import display
+from sklearn.compose import ColumnTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder
+
+if not os.environ.get("TABPFN_TOKEN"):
+    try:
+        from google.colab import userdata
+
+        token = userdata.get("TABPFN_TOKEN")
+        if token:
+            os.environ["TABPFN_TOKEN"] = token
+    except ImportError:
+        pass  # Outside Colab, use the client's local authentication.
+
+from tabpfn_client import TabPFNRegressor
+from tabpfn_client.api_models import ModelVersion
+
+SEED = 42
+DEVICE = "cpu"
+```
+
+## Load and split the listings
+
+The [curated MulTaBench dataset](https://www.kaggle.com/datasets/chico89/multabench-zomato-restaurants) contains 41,665 rated listings from the [original Zomato dataset](https://www.kaggle.com/datasets/himanshupoddar/zomato-bangalore-restaurants). Ratings are numeric and URLs have already been removed.
+
+Split the dataset into 80% training, 10% validation, and 10% testing. XGBoost uses validation RMSE to select hyperparameters and tree count. Once tuning finishes, both XGBoost and TabPFN fit on all 37,498 training plus validation rows.
+
+This is a random **listing-level** split: restaurants can recur across splits, and `reviews_list` contains individual review scores. The task is to estimate existing listings' aggregate ratings; it does not measure performance on unseen restaurants or future ratings.
+
+```python
+data_dir = Path("data/zomato")
+data_dir.mkdir(parents=True, exist_ok=True)
+if not (data_dir / "data.csv").exists():
+    urlretrieve(
+        "https://www.kaggle.com/api/v1/datasets/download/chico89/"
+        "multabench-zomato-restaurants?datasetVersionNumber=1",
+        data_dir / "dataset.zip",
+    )
+    with ZipFile(data_dir / "dataset.zip") as archive:
+        (data_dir / "data.csv").write_bytes(archive.read("data.csv"))
+
+df = pd.read_csv(data_dir / "data.csv")
+assert len(df) == 41_665 and df["rate"].between(0, 5).all()
+cost_column = "approx cost(for two people)"
+df[cost_column] = pd.to_numeric(
+    df[cost_column].astype(str).str.replace(",", "", regex=False), errors="coerce"
+)
+
+train_valid, test = train_test_split(df, test_size=0.1, random_state=SEED)
+train, valid = train_test_split(train_valid, test_size=1 / 9, random_state=SEED)
+
+X_train, y_train = train.drop(columns="rate"), train["rate"].to_numpy()
+X_valid, y_valid = valid.drop(columns="rate"), valid["rate"].to_numpy()
+X_train_valid = train_valid.drop(columns="rate")
+y_train_valid = train_valid["rate"].to_numpy()
+X_test, y_test = test.drop(columns="rate"), test["rate"].to_numpy()
+print(f"Train: {len(train):,}; validation: {len(valid):,}; test: {len(test):,}")
+print(f"Final training set for every model: {len(train_valid):,} rows")
+```
+
+```console
+Train: 33,331; validation: 4,167; test: 4,167
+Final training set for every model: 37,498 rows
+```
+
+### Sample listings and text
+
+Inspect a few training listings, then read one complete set of their source text fields.
+
+```python
+with pd.option_context("display.max_columns", None, "display.max_colwidth", 70):
+    display(train.head(3))
+
+for column in ["reviews_list", "menu_item", "dish_liked"]:
+    print(f"{column}:\n{train.iloc[0][column]}\n")
+```
+
+```console
+                                                                     address  \
+36208  5, 6/1, Opposite, Indicash ATM, Sri Ram Temple Road, Ejipura, Bang...
+7166   Shop 26, Opposite Gopalan Innovation Mall, 2nd Stage, Bannerghatta...
+3598   1st Floor, Sai Charan, Opposite Narayana PU College, Behind Ravind...
+
+                     name online_order book_table  votes  \
+36208    Assi Tussi Lassi          Yes         No     27
+7166   Udupi Thaja Thindi          Yes         No     42
+3598          Food Theory           No         No     88
+
+                                  phone   location      rest_type  \
+36208                    +91 9066331614    Ejipura  Beverage Shop
+7166   080 26684932\r\r\n+91 9448180376        BTM    Quick Bites
+3598                     +91 9108491095  Bellandur            NaN
+
+                             dish_liked  \
+36208                               NaN
+7166   Masala Dosa, Vada, Filter Coffee
+3598      Pasta, Tandoori Roti, Brownie
+
+                                                          cuisines  \
+36208                              Beverages, Fast Food, Ice Cream
+7166                North Indian, South Indian, Chinese, Fast Food
+3598   Biryani, North Indian, Italian, Chinese, Sandwich, Desserts
+
+       approx cost(for two people)  \
+36208                        200.0
+7166                         250.0
+3598                         500.0
+
+                                                                reviews_list  \
+36208  [('Rated 5.0', 'RATED\n  Had been there after a tiring day at work...
+7166   [('Rated 3.0', "RATED\n  Ate butter roti and paneer butter masala....
+3598   [('Rated 3.0', "RATED\n  Have been wanting to try this place for q...
+
+                                                                   menu_item  \
+36208  ['Sweet Lassi', 'Banana Lassi', 'Mango Lassi', 'Strawberry Lassi',...
+7166   ['2 Idli with 1 Vada', 'Rice Bath', 'Masala Dosa', 'Ghee Masala Do...
+3598                                                                      []
+
+      listed_in(type)   listed_in(city)  rate
+36208        Delivery  Old Airport Road   3.7
+7166         Delivery               BTM   2.9
+3598         Desserts         Bellandur   3.0
+reviews_list:
+[('Rated 5.0', 'RATED\n  Had been there after a tiring day at work. Ordrd veg cheese sandwch nd cold coffee jst to kill my hunger as i was very hungry.. I lyk d taste of sandwch as it was bit difrent in taste from the usual veg sandwch wch i eat from juice junction nd i lykd it.. Cold coffee was gud to taste. Overall, i lykd the food.\nHowever, luking at d exaustive menu nd hygiene level wch these guys have in ejipura location, thy shud cum up wid sum dinner options as well as in egipura its hardly to find gud north indian dinner menu at nite spcly for people lyk me who stays in a pg and cnt eat pg food..'), ('Rated 5.0', 'RATED\n  Blueberry blend, Mango lassi and chocolate cold coffee are to die for. Visited couple of weeks back with friends and liked the price point plus the humble stuff. Looking forward to visit again.'), ('Rated 1.0', "RATED\n  So ...I went to this place and ordered a chocolate lava cake ice cream ... Horrible is the word for it ! ...choco lava is supposed to be served hot with cold ice cream ...... It wasn't so here ... Choco lava was hard n not heated at all ...n when the same was reported to the guy who was making it ...he said he heated it but thanda ho gaya ....it wasn't even a little bit warm ..."), ('Rated 5.0', 'RATED\n  Rijusmita D Kashyap Addictive ice creams, tempting and makes me indulge more and more... Definitely a must try everytime - Winters or summers!!! Try dry fruit sundae from here'), ('Rated 4.0', 'RATED\n  Ranging from fresh juices, milkshakes and mouth watering ice creams, I am glad to have ordered from Assi Tussi Lassi. Loving their experiments with food and reaching out to the right taste of us.'), ('Rated 5.0', 'RATED\n  Great milkshakes at great price!!! Love the Belgium chocolate as well as the sandwiches...reasonable price and I love those friendly staffs...'), ('Rated 5.0', 'RATED\n  Even if you are not a cafe person, you will fall in love with this new place! Must Must try!\nGreat food i must admit, not forgetting those supergood milkshakes though.'), ('Rated 5.0', 'RATED\n  Nice decoration on interior design. Variety of ice creams milkshakes and juices. Customer friendly. Quality service. Good musics . Reasonable price.'), ('Rated 5.0', 'RATED\n  Everything is good here. Cost is also less for the quantity they provides. Good Bollywood and Hollywood music and nice staff very friendly...'), ('Rated 5.0', 'RATED\n  The oreo cheese cake shake is possibly the best thing here.. Nice place with good music going on and the staff is friendly and I love it....'), ('Rated 5.0', 'RATED\n  Mango lasso is my personal favourite. A refreshing and tasty flavour. A regular customer here. Lasso prepared here is so fresh and tastes so yum. Friendly staff as well..'), ('Rated 5.0', 'RATED\n  simply to say i loved it..good initiative and even price is reasonable compared with other branded shops...try blue berry blend it is amazing.'), ('Rated 5.0', 'RATED\n  Amazing milkshakes! Better than keventers in my opinion. It costs less too! Lassi and milkshakes are must try here. They are coming up with some offers.'), ('Rated 5.0', 'RATED\n  Love the lassi here, so fresh & tasty. They provide awesome milkshakes and lassi at reasonable price. And they have some extra items to order like burgers & sandwiches'), ('Rated 5.0', 'RATED\n  A small take away destination for delicious milkshakes Lassi and ice creams. All the items I tried from these guys tasted great! Service is good'), ('Rated 5.0', 'RATED\n  Awesome shakes and good quality too.. They have a wide range of desserts and shakes. Recommend to try Oreo Cheesecake shake. They are currently running offers on milkshakes and ice creams')]
+
+menu_item:
+['Sweet Lassi', 'Banana Lassi', 'Mango Lassi', 'Strawberry Lassi', 'Dry Fruit Lassi', 'Pineapple Lassi', 'Rooh Afza Lassi', 'Pomegranate Juice', 'Nutty Chocolatty Shake', 'Oreo Cheese Cake Shake', 'Belgium Chocolate Shake', 'Kit Kat Oreo Shake', 'Assi Tussi Lassi Special Cold Coffee', 'Cold Coffee', 'Chocolate Cold Coffee', 'Kit Kat Cold Coffee', 'Butterscotch Fudge Ice Cream', 'Mexican Brownie Ice Cream', 'Gudbud Ice Cream', 'Dry Fruit Sundae Ice Cream', 'Chocolate Fudge Ice Cream', 'Fruit Salad with Ice Cream', 'Fruit Overload Ice Cream', 'Death by Chocolate Ice Cream', 'Corn Grill Sandwich', 'Sweet Lassi', 'Banana Lassi', 'Mango Lassi', 'Mango Banana Lassi', 'Strawberry Lassi', 'Dry Fruit Lassi', 'Pineapple Lassi', 'Rooh Afza Lassi', 'Butterscotch Fudge Ice Cream', 'Mexican Brownie Ice Cream', 'Gudbud Ice Cream', 'Dry Fruit Sundae Ice Cream', 'Chocolate Fudge Ice Cream', 'Fruit Salad with Ice Cream', 'Fruit Overload Ice Cream', 'Death by Chocolate Ice Cream', 'Fresh Lime Juice', 'Ginger Lime Juice', 'Mint Lime Juice', 'Pineapple Juice', 'Watermelon Juice', 'Muskmelon Juice', 'Orange Juice', 'Mosambi Juice', 'Papaya Juice', 'Pomegranate Juice', 'Carrot Apple Pineapple Juice', 'Apple Beetroot Carrot Juice', 'Plain Wheat Grass Juice', 'Lemon Wheat Grass Juice', 'Watermelon Wheat Grass Juice', 'Pomegranate Wheat Grass Juice', 'Orange Wheat Grass Juice', 'Banana Wheat Grass Juice', 'Butterscotch Shake', 'Nutty Chocolatty Shake', 'Oreo Cheese Cake Shake', 'Belgium Chocolate Shake', 'Super Snicker Shake', 'Red Velvet Shake', 'Kit Kat Oreo Shake', 'Alphonso Mango Shake', 'Blue Berry Blend Shake', 'Zesty Strawberry Shake', 'Nutty Vanilla Shake', 'Brownie Shake', 'Banana Shake', 'Chikoo Shake', 'Apple Shake', 'Butter Fruit Shake', 'Assi Tussi Lassi Special Cold Coffee', 'Cold Coffee', 'Chocolate Cold Coffee', 'Strawberry Cold Coffee', 'Oreo Cold Coffee', 'Kit Kat Cold Coffee', 'Jam Toastie', 'Gulkand Toastie', 'Sandwich Toastie', 'Special Veg Toastie', 'Peanut Butter Toastie', 'Cheese Sandwich Toastie', 'Cheese Chilli Toastie', 'Capsicum Cheese Toastie', 'Cheese Gulkand Toastie', 'Milk Chocolate Toastie', 'Chocolate Toastie', 'Corn Grill Sandwich', 'Veg Grill Sandwich', 'Tomato Grill Sandwich', 'Cheese Grill Sandwich', 'Cheese Chili Grill Sandwich', 'Tomato Cheese Grill Sandwich', 'Veg Grill Extra Cheese Sandwich', 'Cheese Tomato+Capsicum Sandwich']
+
+dish_liked:
+nan
+```
+
+```python
+results = []
+predictions = {}
+
+def record(name, prediction):
+    predictions[name] = prediction
+    results.append({
+        "Model": name,
+        "R² ↑": r2_score(y_test, prediction),
+        "RMSE ↓": root_mean_squared_error(y_test, prediction),
+        "MAE ↓": mean_absolute_error(y_test, prediction),
+    })
+```
+
+## Fit both TabPFN versions, with and without thinking
+
+Pass the prepared columns, including the text fields, directly to the client. For TabPFN, keep the first 1,000 characters of each review; all other fields remain unchanged. XGBoost uses the full reviews. Every configuration uses all training plus validation rows and eight ensemble members. The API handles text processing.
+
+Thinking spends additional compute during fitting to optimize prediction quality. Use high effort and RMSE as the objective for both versions; the test set remains untouched during fitting. The standard configurations use no hyperparameter tuning.
+
+```python
+X_train_valid_tabpfn = X_train_valid.assign(
+    reviews_list=X_train_valid["reviews_list"].str.slice(stop=1_000)
+)
+X_test_tabpfn = X_test.assign(
+    reviews_list=X_test["reviews_list"].str.slice(stop=1_000)
+)
+
+common = dict(n_estimators=8, random_state=SEED)
+for version_name, version in [("TabPFN 3", ModelVersion.V3),
+                              ("TabPFN 3.5", ModelVersion.V3_5)]:
+    for thinking in [False, True]:
+        name = f"{version_name} ({'thinking' if thinking else 'no thinking'})"
+        options = dict(common)
+        if thinking:
+            options.update(thinking_effort="high", thinking_metric="rmse")
+        model = TabPFNRegressor.create_default_for_version(version, **options)
+        model.fit(X_train_valid_tabpfn, y_train_valid)
+        prediction = model.predict(X_test_tabpfn)
+        record(name, prediction)
+        print(f"{name}: R²={results[-1]['R² ↑']:.4f}")
+        del model
+        _ = gc.collect()
+```
+
+```console
+TabPFN 3 (no thinking): R²=0.9798
+TabPFN 3 (thinking): R²=0.9819
+TabPFN 3.5 (no thinking): R²=0.9833
+TabPFN 3.5 (thinking): R²=0.9836
+```
+
+## Give XGBoost text features
+
+Combine the full review, menu, and liked-dish fields into one text field. TF-IDF represents words and two-word phrases, so XGBoost can learn from shared language across listings. The tokenizer keeps numbers such as review scores. The other string fields use one-hot encoding; numeric fields use median imputation.
+
+Fit the vocabulary, category encoder, and imputer on training rows only during tuning. After selecting XGBoost's settings, refit this preprocessing on training plus validation rows. Test rows never fit any preprocessing step.
+
+```python
+text_columns = ["reviews_list", "menu_item", "dish_liked"]
+categorical_columns = [
+    column for column in X_train.select_dtypes(exclude="number").columns
+    if column not in text_columns
+]
+numeric_columns = X_train.select_dtypes(include="number").columns.tolist()
+
+def prepare_features(frame):
+    prepared = frame.drop(columns=text_columns).copy()
+    prepared["text"] = frame[text_columns].fillna("").agg(" ".join, axis=1)
+    prepared[categorical_columns] = prepared[categorical_columns].fillna("Unknown")
+    return prepared
+
+preprocessor = ColumnTransformer([
+    ("text", TfidfVectorizer(
+        max_features=20_000, ngram_range=(1, 2), min_df=3,
+        sublinear_tf=True, dtype=np.float32,
+        token_pattern=r"(?u)\b\w[\w.]*\b",
+    ), "text"),
+    ("categories", OneHotEncoder(handle_unknown="ignore", dtype=np.float32),
+     categorical_columns),
+    ("numeric", SimpleImputer(strategy="median"), numeric_columns),
+], sparse_threshold=1.0)
+
+preprocess_start = time.perf_counter()
+X_train_xgb = preprocessor.fit_transform(prepare_features(X_train)).astype(np.float32)
+X_valid_xgb = preprocessor.transform(prepare_features(X_valid)).astype(np.float32)
+preprocess_seconds = time.perf_counter() - preprocess_start
+print(f"XGBoost features: {X_train_xgb.shape[1]:,}; preprocessing: {preprocess_seconds:.1f}s")
+```
+
+```console
+XGBoost features: 48,839; preprocessing: 53.7s
+```
+
+Here are the first three training text fields beside six TF-IDF columns with the largest combined weights in these rows. Column names show the word or phrase; a zero means it is absent. The full model input also contains the other TF-IDF columns, one-hot categories, and numeric fields.
+
+```python
+text_features = preprocessor.named_transformers_["text"]
+preview_text = prepare_features(X_train.head(3))["text"]
+preview_tfidf = text_features.transform(preview_text)
+shown_columns = np.asarray(preview_tfidf.sum(axis=0)).ravel().argsort()[-6:][::-1]
+feature_preview = pd.DataFrame(
+    preview_tfidf[:, shown_columns].toarray(), index=preview_text.index,
+    columns=[f"tfidf: {name}" for name in text_features.get_feature_names_out()[shown_columns]],
+)
+with pd.option_context("display.max_columns", None, "display.max_colwidth", 120):
+    display(pd.concat([preview_text, feature_preview.round(3)], axis=1))
+```
+
+```console
+                                                                                                                          text  \
+36208  [('Rated 5.0', 'RATED\n  Had been there after a tiring day at work. Ordrd veg cheese sandwch nd cold coffee jst to k...
+7166   [('Rated 3.0', "RATED\n  Ate butter roti and paneer butter masala. The Roti's were good but the paneer butter masala...
+3598   [('Rated 3.0', "RATED\n  Have been wanting to try this place for quite some time now. The place looks decent, But do...
+
+       tfidf: masala dosa  tfidf: bath  tfidf: dosa  tfidf: idli  \
+36208                0.00        0.000        0.000        0.000
+7166                 0.19        0.185        0.179        0.164
+3598                 0.00        0.000        0.000        0.000
+
+       tfidf: dosa ghee  tfidf: vada
+36208             0.000        0.000
+7166              0.154        0.142
+3598              0.000        0.000
+```
+
+## Tune XGBoost on validation RMSE
+
+Optuna searches for five minutes, with early stopping to select the number of trees. A callback checks the deadline after each boosting iteration; setup and an in-progress iteration can add a little time. Feature extraction, final refitting, and test prediction are outside the tuning budget.
+
+```python
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+xgb_common = dict(
+    objective="reg:squarederror", eval_metric="rmse", tree_method="hist",
+    device=DEVICE, n_jobs=8, random_state=SEED,
+)
+start = time.perf_counter()
+deadline = start + 300
+
+class Deadline(xgb.callback.TrainingCallback):
+    def after_iteration(self, model, epoch, evals_log):
+        return time.perf_counter() >= deadline
+
+def objective(trial):
+    params = {
+        "max_depth": trial.suggest_int("max_depth", 3, 10),
+        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+        "min_child_weight": trial.suggest_float("min_child_weight", 1, 100, log=True),
+        "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+        "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10, log=True),
+        "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 100, log=True),
+    }
+    model = xgb.XGBRegressor(
+        **xgb_common, **params, n_estimators=3_000,
+        early_stopping_rounds=50, callbacks=[Deadline()],
+    )
+    model.fit(X_train_xgb, y_train, eval_set=[(X_valid_xgb, y_valid)], verbose=False)
+    trial.set_user_attr("n_estimators", model.best_iteration + 1)
+    return float(model.best_score)
+
+study = optuna.create_study(
+    direction="minimize", sampler=optuna.samplers.TPESampler(seed=SEED)
+)
+study.optimize(objective, timeout=max(0, deadline - time.perf_counter()))
+tuning_seconds = time.perf_counter() - start
+best_params = dict(
+    study.best_params, n_estimators=study.best_trial.user_attrs["n_estimators"]
+)
+print(f"Search: {tuning_seconds:.1f}s; trials: {len(study.trials)}")
+print(best_params)
+```
+
+```console
+Search: 301.0s; trials: 1
+{'max_depth': 5, 'learning_rate': 0.2536999076681772, 'min_child_weight': 29.10635913133069, 'subsample': 0.8394633936788146, 'colsample_bytree': 0.6624074561769746, 'reg_alpha': 2.5348407664333426e-07, 'reg_lambda': 0.0019517224641449498, 'n_estimators': 257}
+```
+
+## Fit default and tuned XGBoost
+
+Refit the feature extraction on training plus validation rows and use the same resulting columns for both baselines. The default baseline keeps XGBoost's predictive hyperparameters at their defaults, with no tuning or early stopping. The tuned baseline uses the validation-selected settings and tree count.
+
+```python
+X_train_valid_xgb = preprocessor.fit_transform(
+    prepare_features(X_train_valid)
+).astype(np.float32)
+X_test_xgb = preprocessor.transform(prepare_features(X_test)).astype(np.float32)
+default_model = xgb.XGBRegressor(**xgb_common)
+default_model.fit(X_train_valid_xgb, y_train_valid, verbose=False)
+record("XGBoost + TF-IDF (default)", default_model.predict(X_test_xgb))
+print(f"Default XGBoost test R²: {results[-1]['R² ↑']:.4f}")
+del default_model
+
+model = xgb.XGBRegressor(**xgb_common, **best_params)
+model.fit(X_train_valid_xgb, y_train_valid, verbose=False)
+record("XGBoost + TF-IDF (5-min tuning)", model.predict(X_test_xgb))
+print(f"XGBoost test R²: {results[-1]['R² ↑']:.4f}")
+del model, X_train_xgb, X_valid_xgb, X_train_valid_xgb, X_test_xgb
+_ = gc.collect()
+```
+
+```console
+Default XGBoost test R²: 0.8619
+XGBoost test R²: 0.8646
+```
+
+## Compare on the untouched test set
+
+Higher R² and lower RMSE or MAE indicate better predictions. RMSE and MAE are measured in rating points. All four TabPFN configurations and both XGBoost baselines use the same 37,498 fitting rows and 4,167 test rows. XGBoost learns from TF-IDF text features, while TabPFN processes raw text through the API.
+
+This is one fixed split from [MulTaBench](https://github.com/alanarazi7/MulTaBench), with different preprocessing and evaluation from its five-fold leaderboard. Treat the scores as a worked example, not a significance claim.
+
+```python
+model_order = [
+    "TabPFN 3 (no thinking)", "TabPFN 3 (thinking)",
+    "TabPFN 3.5 (no thinking)", "TabPFN 3.5 (thinking)",
+    "XGBoost + TF-IDF (default)", "XGBoost + TF-IDF (5-min tuning)",
+]
+scores = (pd.DataFrame(results).set_index("Model").reindex(model_order)
+          .sort_values("RMSE ↓", kind="stable"))
+display(scores.round(4))
+
+fig, ax = plt.subplots(figsize=(9, 5))
+colors = dict(zip(model_order, ["#94a3b8", "#475569", "#86bcb1", "#21806d", "#f3ce94", "#e0a14a"]))
+bars = ax.barh(scores.index, scores["RMSE ↓"], color=[colors[name] for name in scores.index])
+assert np.isfinite(scores.to_numpy()).all(), "Every model must have measured scores."
+ax.bar_label(bars, labels=[f"{value:.4f}" for value in scores["RMSE ↓"]], padding=5)
+ax.set_xlabel("Test RMSE (rating points; lower is better)")
+ax.set_title("Restaurant rating prediction")
+ax.set_xlim(0, scores["RMSE ↓"].max() * 1.18)
+ax.invert_yaxis()
+ax.spines[["top", "right"]].set_visible(False)
+fig.tight_layout()
+plt.show()
+```
+
+```console
+                                   R² ↑  RMSE ↓   MAE ↓
+Model
+TabPFN 3.5 (thinking)            0.9836  0.0566  0.0155
+TabPFN 3.5 (no thinking)         0.9833  0.0571  0.0161
+TabPFN 3 (thinking)              0.9819  0.0595  0.0205
+TabPFN 3 (no thinking)           0.9798  0.0628  0.0183
+XGBoost + TF-IDF (5-min tuning)  0.8646  0.1626  0.1130
+XGBoost + TF-IDF (default)       0.8619  0.1642  0.1180
+```
+
+![Compare on the untouched test set](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/zomato_model_comparison/plot-01.png)
+
+TabPFN 3.5 reduces test RMSE from 0.0628 to 0.0571 rating points compared with TabPFN 3 in standard mode. Thinking improves RMSE for both versions: to 0.0595 for TabPFN 3 and 0.0566 for TabPFN 3.5. Tuned XGBoost reaches 0.1626. These scores describe this listing-level task, where restaurants can recur and reviews contain individual rating scores.
