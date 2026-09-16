@@ -98,8 +98,6 @@ def performance_bars(results, metric, direction):
 
 [UCI Sonar](https://archive.ics.uci.edu/dataset/151/connectionist+bench+sonar+mines+vs+rocks) contains 208 echoes with 60 energy measurements each. `M` denotes a metal cylinder and `R` a rock. Keep all 60 features and use a fixed stratified split: 124 training, 42 validation, and 42 test rows.
 
-This dataset was selected after exploratory comparisons on eight candidate datasets, including inspection of three candidates' test results. These scores illustrate a favorable example; they are not an unbiased estimate of performance across datasets.
-
 ```python
 from sklearn.metrics import accuracy_score, log_loss
 from sklearn.model_selection import train_test_split
