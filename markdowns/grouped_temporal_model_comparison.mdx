@@ -212,8 +212,8 @@ ax_split.set(yticks=[0, 1, 2], yticklabels=["Split 2", "Split 1", "Split 0"],
 ax_split.invert_yaxis()
 ax_split.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
 ax_split.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
-ax_split.set_xlim(vehicles.PurchDate.min() - pd.Timedelta(days=20),
-                  vehicles.PurchDate.max() + pd.Timedelta(days=115))
+ax_split.set_xlim(mdates.date2num(vehicles.PurchDate.min()) - 20,
+                  mdates.date2num(vehicles.PurchDate.max()) + 115)
 ax_split.legend(handles=[Patch(color="#dbe4eb", label="Training history"),
                          Patch(color="#00897b", label="Held-out window")],
                  loc="lower left", frameon=False, ncol=2, bbox_to_anchor=(0, -0.5))
@@ -229,11 +229,13 @@ plt.show()
 ## Compare the three models
 
 Use the protein measurements as predictors and drop `MouseID`. For vehicles,
-use purchase date only to define the split. Preserve missing values and encode
+omit purchase date from the standard models. Thinking receives the original
+group/date column below to guide its validation. Preserve missing values and encode
 categorical columns with categories learned from the training rows; unseen
 test categories become missing for every model.
 
-Both TabPFN versions use four estimators and seed 42. XGBoost uses a fixed CPU
+Both TabPFN versions keep their default estimator count and random state.
+The client already fixes its seed; no seed or ensemble-size search is used. XGBoost uses a fixed CPU
 histogram configuration: 500 trees, depth 4, and learning rate 0.05. There is no
 test-set tuning. This is a fresh cookbook comparison using simple preprocessing,
 not a reproduction of Beyond Arena's feature generation or tuned baselines.
@@ -254,11 +256,17 @@ def prepare(frame, target, split_column, train, test):
             encoder.transform(frame.iloc[test][target]))
 
 def compare(frame, target, split_column, task_splits, name, *,
-            thinking_effort=None, thinking_metric=None):
+            thinking_effort=None, thinking_metric=None, group_col=None, time_col=None):
     rows, predictions = [], {}
     for fold, (train, test) in enumerate(task_splits):
         X_train, X_test, y_train, y_test = prepare(frame, target, split_column, train, test)
         categorical = [X_train.columns.get_loc(c) for c in X_train.select_dtypes("category")]
+        if thinking_effort is not None:
+            # Preserve the original identifiers/dates in both frames for Thinking.
+            for column in [group_col, time_col]:
+                if column is not None:
+                    X_train[column] = frame.iloc[train][column]
+                    X_test[column] = frame.iloc[test][column]
         for model_name, version in [("TabPFN 3", ModelVersion.V3),
                                     ("TabPFN 3.5", ModelVersion.V3_5),
                                     ("XGBoost", None)]:
@@ -267,13 +275,14 @@ def compare(frame, target, split_column, task_splits, name, *,
             thinking = {}
             if thinking_effort is not None:
                 model_name += " Thinking (high)"
-                thinking = dict(thinking_effort=thinking_effort, thinking_metric=thinking_metric)
+                thinking = dict(thinking_effort=thinking_effort, thinking_metric=thinking_metric,
+                                group_col=group_col, time_col=time_col)
             model = (XGBClassifier(
                 n_estimators=500, max_depth=4, learning_rate=0.05,
                 tree_method="hist", device="cpu", enable_categorical=True,
                 n_jobs=8, random_state=42,
             ) if version is None else TabPFNClassifier.create_default_for_version(
-                version, n_estimators=4, random_state=42,
+                version,
                 categorical_features_indices=categorical, **thinking,
             ))
             started = time.perf_counter()
@@ -320,15 +329,15 @@ Mice proteins, split 2: restored TabPFN 3
 Mice proteins, split 2: restored TabPFN 3.5
 Mice proteins, split 2: restored XGBoost
          Dataset  Split       Model  Log-loss
-0  Mice proteins      0    TabPFN 3    0.9846
-1  Mice proteins      0  TabPFN 3.5    0.7673
-2  Mice proteins      0     XGBoost    1.7500
-3  Mice proteins      1    TabPFN 3    1.1757
-4  Mice proteins      1  TabPFN 3.5    0.7599
-5  Mice proteins      1     XGBoost    2.3767
-6  Mice proteins      2    TabPFN 3    1.3678
-7  Mice proteins      2  TabPFN 3.5    0.7504
-8  Mice proteins      2     XGBoost    1.6433
+0  Mice proteins      0    TabPFN 3    1.0772
+1  Mice proteins      0  TabPFN 3.5    0.7729
+2  Mice proteins      0     XGBoost    1.7709
+3  Mice proteins      1    TabPFN 3    1.1772
+4  Mice proteins      1  TabPFN 3.5    0.6991
+5  Mice proteins      1     XGBoost    2.3423
+6  Mice proteins      2    TabPFN 3    1.1296
+7  Mice proteins      2  TabPFN 3.5    0.7970
+8  Mice proteins      2     XGBoost    1.6562
 ```
 
 ### Future vehicle purchases
@@ -356,15 +365,15 @@ Vehicle purchases, split 2: restored TabPFN 3
 Vehicle purchases, split 2: restored TabPFN 3.5
 Vehicle purchases, split 2: restored XGBoost
              Dataset  Split       Model  ROC AUC
-0  Vehicle purchases      0    TabPFN 3   0.8338
-1  Vehicle purchases      0  TabPFN 3.5   0.8448
-2  Vehicle purchases      0     XGBoost   0.8123
-3  Vehicle purchases      1    TabPFN 3   0.7819
-4  Vehicle purchases      1  TabPFN 3.5   0.7930
-5  Vehicle purchases      1     XGBoost   0.7517
-6  Vehicle purchases      2    TabPFN 3   0.7647
-7  Vehicle purchases      2  TabPFN 3.5   0.7766
-8  Vehicle purchases      2     XGBoost   0.7471
+0  Vehicle purchases      0    TabPFN 3   0.8375
+1  Vehicle purchases      0  TabPFN 3.5   0.8438
+2  Vehicle purchases      0     XGBoost   0.7953
+3  Vehicle purchases      1    TabPFN 3   0.7872
+4  Vehicle purchases      1  TabPFN 3.5   0.7962
+5  Vehicle purchases      1     XGBoost   0.7268
+6  Vehicle purchases      2    TabPFN 3   0.7680
+7  Vehicle purchases      2  TabPFN 3.5   0.7812
+8  Vehicle purchases      2     XGBoost   0.7261
 ```
 
 ## Performance on grouped and temporal data
@@ -412,15 +421,15 @@ plt.show()
 Mice proteins: Log-loss
             Log-loss
 Model
-TabPFN 3      1.1760
-TabPFN 3.5    0.7592
-XGBoost       1.9233
+TabPFN 3      1.1280
+TabPFN 3.5    0.7563
+XGBoost       1.9231
 Vehicle purchases: ROC AUC
             ROC AUC
 Model
-TabPFN 3     0.7935
-TabPFN 3.5   0.8048
-XGBoost      0.7704
+TabPFN 3     0.7976
+TabPFN 3.5   0.8071
+XGBoost      0.7494
 ```
 
 ![Performance on grouped and temporal data](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/grouped_temporal_model_comparison/plot-02.png)
@@ -436,17 +445,21 @@ risk ranking. The helper above forwards these settings to
 
 Run the same three splits with the same training rows and preprocessing.
 Only training data is passed to `fit()`; held-out labels are used for scoring.
-Thinking's internal validation need not reproduce these group or time splits,
-so the outer evaluation remains essential.
+Pass `group_col="MouseID"` for mice so Thinking keeps each animal together
+in its internal validation, and `time_col="PurchDate"` for vehicles so it
+validates on contiguous time blocks. These columns must remain in the
+DataFrames passed to both `fit()` and `predict_proba()`; the helper adds back
+the original identifiers and dates for Thinking. Standard models omit them.
+The outer held-out groups and future windows remain the final evaluation.
 
 ```python
 mice_thinking, mice_thinking_predictions = compare(
     mice, "class", "MouseID", splits["Mice proteins"], "Mice proteins",
-    thinking_effort="high", thinking_metric="log_loss",
+    thinking_effort="high", thinking_metric="log_loss", group_col="MouseID",
 )
 vehicle_thinking, vehicle_thinking_predictions = compare(
     vehicles, "IsBadBuy", "PurchDate", splits["Vehicle purchases"], "Vehicle purchases",
-    thinking_effort="high", thinking_metric="roc_auc",
+    thinking_effort="high", thinking_metric="roc_auc", time_col="PurchDate",
 )
 ```
 
@@ -510,19 +523,19 @@ for dataset, metric, direction in [
 Mice proteins: Log-loss (lower is better)
                             Log-loss
 Model
-TabPFN 3                      1.1760
-TabPFN 3 Thinking (high)      1.2056
-TabPFN 3.5                    0.7592
-TabPFN 3.5 Thinking (high)    0.7847
-XGBoost                       1.9233
+TabPFN 3                      1.1280
+TabPFN 3 Thinking (high)      1.0963
+TabPFN 3.5                    0.7563
+TabPFN 3.5 Thinking (high)    0.7339
+XGBoost                       1.9231
 Vehicle purchases: ROC AUC (higher is better)
                             ROC AUC
 Model
-TabPFN 3                     0.7935
-TabPFN 3 Thinking (high)     0.7944
-TabPFN 3.5                   0.8048
-TabPFN 3.5 Thinking (high)   0.8058
-XGBoost                      0.7704
+TabPFN 3                     0.7976
+TabPFN 3 Thinking (high)     0.7974
+TabPFN 3.5                   0.8071
+TabPFN 3.5 Thinking (high)   0.8026
+XGBoost                      0.7494
 ```
 
 ![Does Thinking improve held-out performance?](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/grouped_temporal_model_comparison/plot-03.png)
@@ -531,14 +544,24 @@ XGBoost                      0.7704
 
 ## Reading the comparison
 
-Standard TabPFN 3.5 outperformed standard TabPFN 3 on both tasks: mean mice
-log-loss fell from **1.176 to 0.759**, and vehicle ROC AUC rose from **0.7935 to
-0.8048**. It also outperformed this fixed XGBoost baseline on both metrics.
+With default TabPFN settings, mean mice log-loss is **1.1280** for TabPFN 3
+and **0.7563** for 3.5; mean vehicle ROC AUC is **0.7976** and **0.8071**,
+respectively. XGBoost scores **1.9231** mice log-loss and
+**0.7494** vehicle ROC AUC.
 
-High-effort Thinking slightly worsened mean mice log-loss for both versions:
-**1.176 to 1.206** for TabPFN 3 and **0.759 to 0.785** for 3.5. Vehicle ROC AUC
-improved slightly on average, from **0.7935 to 0.7944** and **0.8048 to 0.8058**,
-respectively. Thinking did not improve every vehicle window.
+For mice, with `group_col="MouseID"`, TabPFN 3 Thinking lowers mean log-loss from **1.1280 to 1.0963**
+(improving 2 of the three splits);
+TabPFN 3.5 Thinking lowers mean log-loss from **0.7563 to 0.7339**
+(improving 3 of the three splits).
+
+For vehicles, with `time_col="PurchDate"`, TabPFN 3 Thinking lowers mean roc auc from **0.7976 to 0.7974**
+(improving 2 of the three splits);
+TabPFN 3.5 Thinking lowers mean roc auc from **0.8071 to 0.8026**
+(improving 1 of the three splits).
+
+The group/time columns guide Thinking's internal validation; they do not
+replace the outer held-out evaluation. These three splits describe these
+tasks, not the effect of changing seeds across a broader benchmark.
 
 Choose a split that matches the next prediction: unseen subjects for grouped
 data, later observations for temporal data. Keep that split fixed across
