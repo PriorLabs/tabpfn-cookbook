@@ -64,6 +64,8 @@ def archive(url):
 
 The helpers below keep model settings and chart colors consistent across variants.
 
+The client documents [`mean_absolute_error`](https://github.com/PriorLabs/tabpfn-client/blob/v0.6.0/src/tabpfn_client/estimator.py#L684-L696) as a supported regression thinking objective; `mae` is an alias for the same metric.
+
 ```python
 def model_for(cls, name, thinking=False, **kwargs):
     return cls.create_default_for_version(
