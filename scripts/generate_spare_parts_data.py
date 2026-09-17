@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = ROOT / "notebooks" / "spare_parts_daily.csv"
+DEFAULT_OUTPUT = ROOT / "datasets" / "forecast_spare_parts_demand" / "spare_parts_daily.csv"
 DATES = pd.date_range("2023-01-01", "2024-12-31", freq="D")
 
 PARTS = [

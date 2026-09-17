@@ -43,7 +43,7 @@ The final predicted label of TabPFN is an attention-weighted average over contex
 The decoder readout needs the local model because it reads an internal attention layer. The hosted API does not expose this layer.
 
 ```python
-!pip install -q --upgrade "tabpfn>=8.4.0" tabpfn-extensions umap-learn
+!pip install -q --upgrade "tabpfn>=8.4.0" tabpfn-extensions umap-learn matplotlib
 ```
 
 ```python
@@ -191,14 +191,14 @@ focus_summary = pd.DataFrame({
     "no-disease vote": [votes[focus_query, 0]],
     "heart-disease vote": [votes[focus_query, 1]],
 })
-focus_summary.style.format({
-    "no-disease vote": "{:.1%}",
-    "heart-disease vote": "{:.1%}",
-})
+for column in ("no-disease vote", "heart-disease vote"):
+    focus_summary[column] = focus_summary[column].map("{:.1%}".format)
+focus_summary
 ```
 
 ```console
-<pandas.io.formats.style.Styler at 0x1265f3a10>
+   true class decoder prediction no-disease vote heart-disease vote
+0  no disease      heart disease           48.5%              51.5%
 ```
 
 ```python
@@ -208,13 +208,47 @@ readout_table.insert(1, "class", [CLASS_NAMES[label] for label in y_train_aligne
 readout_table.insert(2, "decoder weight", weights[focus_query])
 readout_table = readout_table.sort_values("decoder weight", ascending=False)
 
-readout_table.head(10).style.format({"decoder weight": "{:.3%}"}).bar(
-    subset=["decoder weight"], color="#8CB9F1"
-)
+top10 = readout_table.head(10).copy()
+top10["decoder weight"] = top10["decoder weight"].map("{:.3%}".format)
+top10
 ```
 
 ```console
-<pandas.io.formats.style.Styler at 0x12760a210>
+     source row          class decoder weight   Age  Sex  Chest pain  \
+183         160  heart disease         2.121%  38.0  1.0         1.0
+90          264  heart disease         1.777%  48.0  1.0         2.0
+190          87     no disease         1.697%  59.0  1.0         1.0
+178         210  heart disease         1.667%  59.0  1.0         1.0
+3           205     no disease         1.651%  52.0  1.0         1.0
+109         207     no disease         1.492%  58.0  1.0         3.0
+85           10     no disease         1.483%  59.0  1.0         4.0
+79           64     no disease         1.479%  63.0  1.0         1.0
+121         229     no disease         1.458%  52.0  1.0         1.0
+18          218     no disease         1.446%  54.0  1.0         3.0
+
+     Resting BP  Cholesterol  High fasting sugar  Resting ECG  Max heart rate  \
+183       120.0        231.0                 0.0          0.0           182.0
+90        110.0        229.0                 0.0          0.0           168.0
+190       178.0        270.0                 0.0          2.0           145.0
+178       170.0        288.0                 0.0          2.0           159.0
+3         152.0        298.0                 1.0          0.0           178.0
+109       105.0        240.0                 0.0          2.0           154.0
+85        135.0        234.0                 0.0          0.0           161.0
+79        145.0        233.0                 1.0          2.0           150.0
+121       118.0        186.0                 0.0          2.0           190.0
+18        120.0        258.0                 0.0          2.0           147.0
+
+     Exercise angina  ST depression  ST slope  Blocked vessels  Thallium scan
+183              1.0            3.8       2.0              0.0            7.0
+90               0.0            1.0       3.0              0.0            7.0
+190              0.0            4.2       3.0              0.0            7.0
+178              0.0            0.2       2.0              0.0            7.0
+3                0.0            1.2       2.0              0.0            7.0
+109              1.0            0.6       2.0              0.0            7.0
+85               0.0            0.5       2.0              0.0            7.0
+79               0.0            2.3       3.0              0.0            6.0
+121              0.0            0.0       2.0              0.0            6.0
+18               0.0            0.4       2.0              0.0            7.0
 ```
 
 The first row has the largest single weight. The prediction still uses all 200 training rows, not just the ten shown here.
@@ -315,12 +349,22 @@ pd.DataFrame({
     "test position": queries,
     "case": query_titles,
     "true class": [CLASS_NAMES[y_test_array[q]] for q in queries],
-    "heart-disease vote": votes[queries, 1],
-}).style.format({"heart-disease vote": "{:.1%}"})
+    "heart-disease vote": [f"{v:.1%}" for v in votes[queries, 1]],
+})
 ```
 
 ```console
-<pandas.io.formats.style.Styler at 0x1592f69d0>
+   test position                             case     true class  \
+0             52             confident no disease     no disease
+1             46     uncertain · leans no disease     no disease
+2             59  uncertain · leans heart disease     no disease
+3             44          confident heart disease  heart disease
+
+  heart-disease vote
+0               0.9%
+1              47.5%
+2              51.5%
+3              99.6%
 ```
 
 ### Combined raw-feature view

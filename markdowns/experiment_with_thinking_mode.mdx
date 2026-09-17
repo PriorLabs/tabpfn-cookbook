@@ -1,9 +1,12 @@
 ---
 title: Experiment with Thinking Mode
-description: Improve results of target metrics with TabPFN Thinking Mode
+description: Choose a Thinking objective and use group_col for repeated measurements
+  from the same subject.
 cookbookTags:
 - thinking mode
 - api
+- classification
+- grouped data
 authors:
 - name: Prior Labs
   linkedin: https://www.linkedin.com/company/prior-labs
@@ -30,364 +33,279 @@ colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/bl
 {/* cookbook-colab:end process_markdown.py */}
 </div>
 {/* cookbook-meta:end process_markdown.py */}
-*The simplest, strongest way to push TabPFN further.*
-
-TabPFN is strong out of the box. The newest and most powerful way to improve it is **Thinking Mode**: TabPFN-3-Thinking spends extra compute at fit time to deliver better predictions, enabled with a single flag. You pay the optimisation cost once at fit time, and every prediction afterwards benefits.
-
-Thinking mode runs on the hosted API client (`tabpfn-client`), so this whole notebook uses the client. We try it on two contrasting datasets, one where TabPFN is already near-saturated and one with more headroom, to see where the extra compute pays off most.
+Compare standard TabPFN 3.5 with Thinking for Android malware detection,
+then classify mice from protein measurements using `group_col` for repeated
+observations of the same animal.
 
 ## Setup
 
-*Install, authenticate, and import.*
+Install the client and dependencies (`group_col` requires `tabpfn-client` 0.6.0+).
+In Colab, add `TABPFN_TOKEN` to Secrets; elsewhere, use your usual client authentication.
 
 ```python
-!pip install -q tabpfn-client scikit-learn
+%pip install -q --upgrade tabpfn-client==0.6.0 pandas==2.3.3 numpy==2.5.3 scikit-learn==1.9.0 matplotlib==3.11.2 pyarrow==25.0.1 huggingface-hub==1.31.0
 ```
 
 ```python
 import os
 
-from google.colab import userdata
-
-os.environ["TABPFN_TOKEN"] = userdata.get('TABPFN_TOKEN')
+try:
+    from google.colab import userdata
+except ImportError:
+    pass
+else:
+    os.environ["TABPFN_TOKEN"] = userdata.get("TABPFN_TOKEN")
 ```
 
 ```python
+import json
 import time
-import warnings
+from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+from huggingface_hub import hf_hub_download
+from IPython.display import display
 from sklearn.datasets import fetch_openml
-from sklearn.metrics import (
-    accuracy_score,
-    balanced_accuracy_score,
-    f1_score,
-    roc_auc_score,
-)
+from sklearn.metrics import log_loss, roc_auc_score
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
+from sklearn.preprocessing import LabelEncoder
 from tabpfn_client import TabPFNClassifier
+from tabpfn_client.api_models import ModelVersion
 
-warnings.filterwarnings("ignore")
-
-SEED = 0
+plt.rcParams.update({"figure.dpi": 120, "axes.spines.top": False,
+                     "axes.spines.right": False})
 ```
 
-## Data Loaders
+## Choose the objective
 
-*Two roughly balanced binary datasets.*
+Enable Thinking with `thinking_effort="high"` and set `thinking_metric` to match
+your task: ROC AUC for binary ranking, or log-loss for class probabilities.
+See the [Thinking mode guide](https://docs.priorlabs.ai/capabilities/thinking-mode)
+for supported settings.
 
-`NATICUSdroid` is wide (86 features) and already easy for TabPFN; `in_vehicle_coupon_recommendation` is narrower with more headroom. A single loader handles OpenML's mixed categorical/numeric frames: categoricals are ordinal-encoded, missing values are filled, and the target is mapped so `1` is the minority class.
+We use TabPFN 3.5 throughout. The helper reports the chosen metric and elapsed
+time, including fitting, prediction, and API overhead.
 
 ```python
-# @title
-def load_openml_binary(name):
-    """Fetch an OpenML binary-classification frame and return (X, y) as numpy.
-    Categoricals are ordinal-encoded, missing values filled, y mapped to {0,1}
-    with 1 = minority class."""
-    d = fetch_openml(name=name, as_frame=True, parser="auto")
-    X, y = d.data.copy(), d.target
-    cat = [c for c in X.columns if str(X[c].dtype) in ("category", "object")]
-    num = [c for c in X.columns if c not in cat]
-    if cat:
-        enc = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
-        X[cat] = enc.fit_transform(X[cat].astype(str))
-    X[num] = X[num].apply(pd.to_numeric, errors="coerce")
-    X = X.fillna(X.median(numeric_only=True)).fillna(-1)
-    y = LabelEncoder().fit_transform(y.astype(str))
-    if y.mean() > 0.5:
-        y = 1 - y
-    return X.to_numpy(dtype=float), y
-
-
-def load_naticus():
-    """NATICUSdroid: Android malware detection, 7491 x 86 binary permission/intent
-    flags, ~35% malicious."""
-    return load_openml_binary("NATICUSdroid")
-
-
-def load_in_vehicle():
-    """in-vehicle coupon recommendation: 12684 x 24 mixed features (weather, time,
-    destination, coupon type), ~43% accepted."""
-    return load_openml_binary("in_vehicle_coupon_recommendation")
+def evaluate(model, X_train, X_test, y_train, y_test, metric):
+    started = time.perf_counter()
+    model.fit(X_train, y_train)
+    probability = np.asarray(model.predict_proba(X_test), dtype=float)
+    assert np.isfinite(probability).all()
+    assert (probability >= 0).all()
+    assert np.allclose(probability.sum(axis=1), 1, atol=1e-5)
+    # Normalize small floating-point rounding differences from the API.
+    probability /= probability.sum(axis=1, keepdims=True)
+    score = (roc_auc_score(y_test, probability[:, 1]) if metric == "roc_auc"
+             else log_loss(y_test, probability, labels=model.classes_))
+    return {"Score": score, "Seconds": time.perf_counter() - started}
 ```
 
-## Model Helpers
+## NATICUSdroid: malware detection
 
-*Building the client classifier and scoring.*
-
-`build_classifier` returns the hosted API client (every fit runs on it). `score_clf` reports ranking and threshold metrics side by side.
-
-```python
-# @title
-def build_classifier(**kwargs):
-    """All fits run on the hosted API client (thinking mode is API only)."""
-    return TabPFNClassifier(random_state=SEED, **kwargs)
-
-
-def score_clf(model, Xte, yte):
-    proba = model.predict_proba(Xte)
-    pred = model.classes_[np.argmax(proba, axis=1)]
-    return {
-        "roc_auc":           roc_auc_score(yte, proba[:, 1]),
-        "balanced_accuracy": balanced_accuracy_score(yte, pred),
-        "f1":                f1_score(yte, pred, pos_label=1, average="binary", zero_division=0),
-        "accuracy":          accuracy_score(yte, pred),
-    }
-```
-
-### Thinking mode (TabPFN-3-Thinking)
-
-*Spend more compute at fit time, get better predictions.*
-
-Thinking mode applies test-time compute scaling to TabPFN. Instead of a single forward pass, TabPFN-3-Thinking runs an optimisation at fit time, and every prediction afterwards draws on that work. It is a single flag.
+Predict whether an Android app is malicious from 86 permission and intent
+flags. Both models use the same stratified 75/25 split. Higher ROC AUC is better.
 
 ```python
-from tabpfn_client import TabPFNClassifier
-
-# Simplest form: enable with defaults
-model = TabPFNClassifier(thinking_effort="high")
-model.fit(X_train, y_train)
-model.predict(X_test)
-```
-
-`thinking_effort` is `"medium"` or `"high"`; `thinking_metric` targets the objective (classification: `accuracy`, `log_loss`, `roc_auc`). See the [Thinking mode](https://docs.priorlabs.ai/capabilities/thinking-mode) page for details.
-
-> A high-effort fit on these datasets takes a few minutes; the cost is paid once at fit time.
-
-```python
-# @title
-def thinking_kwargs(effort="high", metric=None):
-    """Thinking mode: TabPFN-3-Thinking spends extra compute at fit time for better
-    predictions. metric is one of accuracy, log_loss, roc_auc for classification."""
-    kw = {"thinking_effort": effort}
-    if metric:
-        kw["thinking_metric"] = metric
-    return kw
-```
-
-## Test Runner
-
-*One function to run a configuration, plus helpers to tabulate results.*
-
-`run` fits a configuration on the client and scores it; `make_results_df` adds a relative-improvement column measuring how much of the gap to a perfect score thinking closes against the baseline.
-
-```python
-# @title
-def run(name, Xtr, Xte, ytr, yte, model_kwargs=None):
-    """Fit a client classifier with the given kwargs and score it."""
-    model_kwargs = model_kwargs or {}
-    t0 = time.time()
-    try:
-        clf = build_classifier(**model_kwargs)
-        clf.fit(Xtr, ytr)
-        metrics = score_clf(clf, Xte, yte)
-        metrics["n_features"] = Xtr.shape[1]
-        del clf
-    except Exception as e:
-        print(f"  {name}: FAILED - {e}")
-        metrics = {"n_features": np.nan}
-    metrics["config"] = name
-    metrics["secs"] = round(time.time() - t0, 1)
-    return metrics
-
-
-def make_results_df(rows, headline):
-    df = pd.DataFrame(rows)
-    base = df.loc[df.config == "baseline", headline].iloc[0]
-    df["rel_improve_%"] = 100 * (df[headline] - base) / (1 - base)
-    return df
-
-
-def show(df, headline, cols=None):
-    cols = cols or ["config", headline, "n_features", "secs", "rel_improve_%"]
-    display(df[cols].round(4).set_index("config"))
-```
-
-# Experiments
-
-*Baseline versus thinking mode on each dataset.*
-
-## NATICUSdroid: a Near-Saturated Baseline
-
-*Can thinking squeeze out the last bit of quality?*
-
-NATICUSdroid classifies Android apps as benign or malicious from 86 binary permission and intent flags (7,491 apps, ~35% malicious). TabPFN is already excellent here out of the box (ROC AUC ~0.99), so the question is whether thinking mode can close any of the small remaining gap. Because the classes are roughly balanced we lead with **ROC AUC** and track balanced accuracy alongside.
-
-### Load the data
-
-*The full dataset, with a stratified 75/25 split.*
-
-```python
-print("Loading NATICUSdroid ...")
-X_nat, y_nat = load_naticus()
-print(f"Shape: {X_nat.shape}  |  positive rate: {y_nat.mean():.1%}")
-
+android = fetch_openml(name="NATICUSdroid", as_frame=True, parser="auto")
+X_nat = android.data.apply(pd.to_numeric)
+y_nat = LabelEncoder().fit_transform(android.target.astype(str))
 Xtr_nat, Xte_nat, ytr_nat, yte_nat = train_test_split(
-    X_nat, y_nat, test_size=0.25, random_state=SEED, stratify=y_nat
+    X_nat, y_nat, test_size=0.25, random_state=0, stratify=y_nat,
 )
+print(f"{len(Xtr_nat):,} training apps; {len(Xte_nat):,} held-out apps; {X_nat.shape[1]} features")
 ```
 
 ```console
-Loading NATICUSdroid ...
-Shape: (7491, 86)  |  positive rate: 35.0%
+5,618 training apps; 1,873 held-out apps; 86 features
 ```
-
-### Baseline
-
-*Default TabPFN on all 86 features, scored on ROC AUC.*
 
 ```python
 nat_rows = []
-nat_rows.append(run("baseline", Xtr_nat, Xte_nat, ytr_nat, yte_nat))
-print(f"ROC AUC: {nat_rows[-1]['roc_auc']:.4f}")
+for name, settings in [
+    ("Standard", {}),
+    ("Thinking (high)", {"thinking_effort": "high", "thinking_metric": "roc_auc"}),
+]:
+    model = TabPFNClassifier.create_default_for_version(ModelVersion.V3_5, **settings)
+    result = evaluate(model, Xtr_nat, Xte_nat, ytr_nat, yte_nat, "roc_auc")
+    nat_rows.append({"Model": name, **result})
+nat_results = pd.DataFrame(nat_rows).set_index("Model").rename(columns={"Score": "ROC AUC"})
+display(nat_results.round(4))
 ```
 
 ```console
-ROC AUC: 0.9883
-```
-
-### Thinking mode
-
-*The same fit, with one extra flag.*
-
-We optimise `roc_auc`, a threshold-free measure of ranking quality. Even on a near-saturated baseline, thinking closes a meaningful share of the remaining gap to a perfect score.
-
-```python
-nat_rows.append(run(
-    "thinking high (roc_auc)",
-    Xtr_nat, Xte_nat, ytr_nat, yte_nat,
-    model_kwargs=thinking_kwargs(effort="high", metric="roc_auc"),
-))
-print(f"ROC AUC: {nat_rows[-1]['roc_auc']:.4f}")
-```
-
-```console
-ROC AUC: 0.9902
-```
-
-### Results
-
-```python
-df_nat = make_results_df(nat_rows, "roc_auc")
-show(df_nat, "roc_auc",
-     cols=["config", "roc_auc", "f1", "n_features", "secs", "rel_improve_%"])
-```
-
-```console
-                         roc_auc      f1  n_features  secs  rel_improve_%
-config
-baseline                  0.9883  0.9230          86   4.6          0.000
-thinking high (roc_auc)   0.9902  0.9339          86  11.6         16.492
+                 ROC AUC  Seconds
+Model
+Standard           0.989   4.9148
+Thinking (high)    0.991  72.8368
 ```
 
 ```python
-# @title
-fig, ax = plt.subplots(figsize=(8, 4))
-colors = ["#d0d0d0" if c == "baseline" else "#7B1FA2" for c in df_nat["config"]]
-ax.barh(df_nat["config"], df_nat["roc_auc"], color=colors)
-ax.axvline(df_nat.loc[df_nat.config == "baseline", "roc_auc"].iloc[0],
-           color="black", linestyle="--", linewidth=1, label="baseline")
-ax.set_xlim(0.97, 0.995)
-ax.set_xlabel("ROC AUC")
-ax.set_title("NATICUSdroid - thinking lifts a near-saturated baseline")
+fig, ax = plt.subplots(figsize=(8, 3.2))
+scores = nat_results["ROC AUC"]
+bars = ax.barh(scores.index, scores, color=["#b0bec5", "#7B1FA2"])
+padding = max((scores.max() - scores.min()) * 0.7, 0.003)
+ax.set_xlim(max(0, scores.min() - padding), min(1, scores.max() + padding))
+ax.bar_label(bars, fmt="%.4f", padding=5)
+ax.set(xlabel="ROC AUC (higher is better; zoomed axis)",
+       title="Android malware detection: standard vs Thinking")
 ax.invert_yaxis()
-ax.legend()
-plt.tight_layout()
+fig.tight_layout()
 plt.show()
 ```
 
 ![NATICUSdroid results](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/experiment_with_thinking_mode/naticus-results.png)
 
-## In-Vehicle Coupons: More Headroom
+Thinking changes ROC AUC from **0.9890 to 0.9910** on this split.
 
-*Where thinking mode has more room to work.*
+## Mice proteins: use `group_col` for groups
 
-The in-vehicle coupon dataset asks whether a driver would accept a coupon pushed to their car, given 24 features describing the trip and the offer (12,684 scenarios, ~43% accepted). The baseline leaves more headroom than NATICUSdroid, so thinking has more to gain: it lifts ROC AUC, balanced accuracy, F1 and accuracy together.
+The [UCI Mice Protein Expression dataset](https://doi.org/10.24432/C50S3Z)
+contains 77 protein measurements and eight experimental classes, with
+**15 observations per mouse across 72 mice**.
 
-### Load the data
+We use the [BeyondArena](https://huggingface.co/datasets/TabArena/BeyondArena)
+version, which removes target-defining columns and provides animal identifiers
+and grouped splits. This is a selected example of grouped data.
+Credit: Higuera, Gardiner, and Cios (2015), CC BY 4.0.
 
 ```python
-print("Loading in-vehicle coupon recommendation ...")
-X_cpn, y_cpn = load_in_vehicle()
-print(f"Shape: {X_cpn.shape}  |  positive rate: {y_cpn.mean():.1%}")
+def download_mice_file(filename):
+    return hf_hub_download(
+        "TabArena/BeyondArena",
+        f"mice_protein_trisomy_discriminant/019d738d-99a8-7850-b911-f244ac4ad485/{filename}",
+        repo_type="dataset", revision="88059a3f02ec4abb6ec24bbe0d1c0b7eed31485d",
+    )
 
-Xtr_cpn, Xte_cpn, ytr_cpn, yte_cpn = train_test_split(
-    X_cpn, y_cpn, test_size=0.25, random_state=SEED, stratify=y_cpn
-)
+mice = pd.read_parquet(download_mice_file("dataset.parquet"))
+published_splits = json.loads(Path(download_mice_file(
+    "experiment_metadata.predictive-ml-splits-mold-v1.json"
+)).read_text())["splits"]
+# All three folds of the first published grouped repetition; no split search.
+mice_splits = [published_splits["0"][str(fold)] for fold in range(3)]
+assert not {"Genotype", "Treatment", "Behavior"} & set(mice.columns)
+print(f"{len(mice):,} measurements, {mice.MouseID.nunique()} mice, {mice['class'].nunique()} classes")
 ```
 
 ```console
-Loading in-vehicle coupon recommendation ...
-Shape: (12684, 24)  |  positive rate: 43.2%
+1,080 measurements, 72 mice, 8 classes
 ```
 
-### Baseline
+### Evaluate on unseen mice
+
+Use the three folds of BeyondArena's first grouped repetition. Each fold holds
+out entire mice, with no animal shared between training and test data.
 
 ```python
-cpn_rows = []
-cpn_rows.append(run("baseline", Xtr_cpn, Xte_cpn, ytr_cpn, yte_cpn))
-print(f"ROC AUC: {cpn_rows[-1]['roc_auc']:.4f}")
+split_rows = []
+for fold, (train, test) in enumerate(mice_splits):
+    train_mice = set(mice.iloc[train].MouseID)
+    test_mice = set(mice.iloc[test].MouseID)
+    assert not set(train) & set(test)
+    assert train_mice.isdisjoint(test_mice)
+    split_rows.append({"Fold": fold, "Train rows": len(train), "Test rows": len(test),
+                       "Train mice": len(train_mice), "Test mice": len(test_mice),
+                       "Shared mice": len(train_mice & test_mice)})
+display(pd.DataFrame(split_rows).set_index("Fold"))
 ```
 
 ```console
-ROC AUC: 0.8495
+      Train rows  Test rows  Train mice  Test mice  Shared mice
+Fold
+0            720        360          48         24            0
+1            720        360          48         24            0
+2            720        360          48         24            0
 ```
 
-### Thinking mode
+### Pass the group column
 
-*The lever that moves the needle most here.*
+For grouped data, use Thinking with `group_col="MouseID"` and keep that column
+in both training and prediction DataFrames. Compare against standard TabPFN
+using the protein features alone. Both use the same held-out mice;
+`thinking_metric="log_loss"` selects our metric (lower is better).
 
 ```python
-cpn_rows.append(run(
-    "thinking high (roc_auc)",
-    Xtr_cpn, Xte_cpn, ytr_cpn, yte_cpn,
-    model_kwargs=thinking_kwargs(effort="high", metric="roc_auc"),
-))
-print(f"ROC AUC: {cpn_rows[-1]['roc_auc']:.4f}")
+mice_rows = []
+for fold, (train, test) in enumerate(mice_splits):
+    X_train = mice.iloc[train].drop(columns="class").copy()
+    X_test = mice.iloc[test].drop(columns="class").copy()
+    encoder = LabelEncoder().fit(mice.iloc[train]["class"])
+    y_train = encoder.transform(mice.iloc[train]["class"])
+    y_test = encoder.transform(mice.iloc[test]["class"])
+
+    models = [
+        ("Standard", TabPFNClassifier.create_default_for_version(ModelVersion.V3_5)),
+        ("Thinking + group_col", TabPFNClassifier.create_default_for_version(
+            ModelVersion.V3_5, thinking_effort="high", thinking_metric="log_loss",
+            group_col="MouseID")),
+    ]
+    for name, model in models:
+        # Only grouped Thinking receives the original mouse identities.
+        Xtr = X_train if model.group_col else X_train.drop(columns="MouseID")
+        Xte = X_test if model.group_col else X_test.drop(columns="MouseID")
+        result = evaluate(model, Xtr, Xte, y_train, y_test, "log_loss")
+        mice_rows.append({"Fold": fold, "Model": name, **result})
+        print(f"Fold {fold}, {name}: log-loss {result['Score']:.4f}")
+
+mice_results = pd.DataFrame(mice_rows).rename(columns={"Score": "Log-loss"})
+display(mice_results.pivot(index="Fold", columns="Model", values="Log-loss").round(4))
 ```
 
 ```console
-ROC AUC: 0.8535
+Fold 0, Standard: log-loss 0.7729
+Fold 0, Thinking + group_col: log-loss 0.7636
+Fold 1, Standard: log-loss 0.6991
+Fold 1, Thinking + group_col: log-loss 0.6913
+Fold 2, Standard: log-loss 0.7970
+Fold 2, Thinking + group_col: log-loss 0.7469
+Model  Standard  Thinking + group_col
+Fold
+0        0.7729                0.7636
+1        0.6991                0.6913
+2        0.7970                0.7469
 ```
 
-### Results
+### Results on unseen mice
+
+Bars show mean log-loss across the three folds; dots show individual folds.
 
 ```python
-df_cpn = make_results_df(cpn_rows, "roc_auc")
-show(df_cpn, "roc_auc",
-     cols=["config", "roc_auc", "f1", "n_features", "secs", "rel_improve_%"])
-```
+order = ["Standard", "Thinking + group_col"]
+mice_summary = mice_results.groupby("Model")[["Log-loss", "Seconds"]].mean().reindex(order)
+display(mice_summary.round(4))
 
-```console
-                         roc_auc      f1  n_features  secs  rel_improve_%
-config
-baseline                  0.8495  0.7216          24   3.0         0.0000
-thinking high (roc_auc)   0.8535  0.7329          24  14.0         2.6523
-```
-
-```python
-# @title
-fig, ax = plt.subplots(figsize=(8, 4))
-colors = ["#d0d0d0" if c == "baseline" else "#7B1FA2" for c in df_cpn["config"]]
-ax.barh(df_cpn["config"], df_cpn["roc_auc"], color=colors)
-ax.axvline(df_cpn.loc[df_cpn.config == "baseline", "roc_auc"].iloc[0],
-           color="black", linestyle="--", linewidth=1, label="baseline")
-ax.set_xlim(0.80, 0.86)
-ax.set_xlabel("ROC AUC")
-ax.set_title("in-vehicle coupon - more headroom, larger thinking lift")
+fig, ax = plt.subplots(figsize=(9, 3.8))
+scores = mice_summary["Log-loss"]
+bars = ax.barh(order, scores, color=["#b0bec5", "#7B1FA2"], height=0.55)
+ax.bar_label(bars, fmt="%.4f", padding=6)
+for position, name in enumerate(order):
+    values = mice_results.loc[mice_results.Model == name, "Log-loss"]
+    ax.scatter(values, np.full(len(values), position + 0.18), color="#263238", s=24,
+               zorder=3, label="Individual fold" if position == 0 else None)
+ax.set_xlim(0, mice_results["Log-loss"].max() * 1.2)
+ax.set(xlabel="Multiclass log-loss (lower is better)",
+       title="Mice protein expression: generalization to unseen animals")
 ax.invert_yaxis()
-ax.legend()
-plt.tight_layout()
+ax.legend(frameon=False, loc="lower right")
+fig.tight_layout()
 plt.show()
 ```
 
-![In-vehicle coupon results](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/experiment_with_thinking_mode/coupon-results.png)
+```console
+                      Log-loss  Seconds
+Model
+Standard                0.7563   3.6083
+Thinking + group_col    0.7339  11.4407
+```
+
+![Mice protein results](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/experiment_with_thinking_mode/mice-results.png)
+
+Thinking with `group_col="MouseID"` changes mean log-loss from **0.7563 to 0.7339** across the three folds, a **3.0% reduction**.
 
 ## Takeaways
 
-- **Thinking mode is the simplest, strongest lever.** One flag (`thinking_effort="high"`) lifted ROC AUC and every threshold metric on both datasets, with no feature engineering or tuning.
-- **The gain scales with headroom.** On a near-saturated baseline (NATICUSdroid) the lift is small; with more room (in-vehicle coupons) it is larger. Thinking never hurt ROC AUC here.
-- **It runs on the hosted client and the compute is paid once, at fit time.** Every prediction afterwards benefits, so reach for it first.
+- Set `thinking_metric` to match your task.
+- For grouped data, use `group_col` and retain it at prediction time.
+- Evaluate on held-out data; for repeated observations, hold out whole groups.

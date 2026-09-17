@@ -106,6 +106,7 @@ Questions? Open an issue or email [hello@priorlabs.ai](mailto:hello@priorlabs.ai
 notebooks/   # Author notebooks (.ipynb, frontmatter in cell 0)
 markdowns/   # Generated or hand-written MDX
 visuals/     # Plot images (created by convert when needed)
+datasets/    # Small data files a notebook needs; fetched from the raw GitHub URL on Colab
 scripts/     # convert_to_markdown, process_markdown, validate, …
 ```
 
