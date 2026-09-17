@@ -620,11 +620,14 @@ test_scores = pd.Series(
     name="Test ROC-AUC",
 ).sort_values(ascending=False)
 
-test_scores.to_frame().style.format("{:.3f}")
+test_scores.to_frame().round(3)
 ```
 
 ```console
-<pandas.io.formats.style.Styler at 0x78de1fde4d10>
+                  Test ROC-AUC
+TabPFN-Rel               0.772
+Dummy per entity         0.688
+Dummy                    0.500
 ```
 
 We observe that TabPFN-Rel improves significantly over the baseline. Depending on the dataset, tuning (e.g. `n_trials=3`) can give another nice boost.
