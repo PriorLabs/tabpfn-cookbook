@@ -247,11 +247,6 @@ any resampling or feature engineering:
 - **Random forest.** The 100-tree `RandomForestClassifier` that opens Preda's notebook, and a common
   first model in many others.
 
-The most upvoted notebook overall,
-[Dealing with Imbalanced Datasets](https://www.kaggle.com/code/janiobachmann/credit-fraud-dealing-with-imbalanced-datasets),
-undersamples the majority class before training and evaluates on the balanced subset, so its numbers are not
-comparable to a full test set and we do not reproduce it.
-
 ```python
 def fit_xgb_reference(X_fit, y_fit):
     """XGBoost as configured in the Kaggle reference notebook, early-stopped on a validation slice."""
