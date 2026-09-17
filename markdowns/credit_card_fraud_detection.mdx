@@ -77,7 +77,6 @@ transaction), `Amount`, and `V1` to `V28` go into every model exactly as they ar
 
 ```python
 import os
-import time
 import warnings
 
 import kagglehub
@@ -165,13 +164,13 @@ train 227,845 rows / 394 frauds | test 56,962 rows / 98 frauds
 - **Frauds in the top 100**: if an analyst team can review 100 transactions out of the 56,962 in the test set,
   how many of the 98 frauds are among the 100 highest-scored? This is what a review queue actually sees.
 
-Every model records its scores and timings into one `results` list for the final table.
+Every model records its scores into one `results` list for the final table.
 
 ```python
 results = []
 
 
-def evaluate(name, proba, fit_s, predict_s, notes=""):
+def evaluate(name, proba, notes=""):
     top_100 = int(y_test.to_numpy()[np.argsort(-proba)[:100]].sum())
     results.append(
         {
@@ -179,8 +178,6 @@ def evaluate(name, proba, fit_s, predict_s, notes=""):
             "AUPRC": average_precision_score(y_test, proba),
             "ROC AUC": roc_auc_score(y_test, proba),
             "Frauds in top 100": top_100,
-            "Fit time": f"{fit_s:.1f}s",
-            "Predict time": f"{predict_s:.1f}s",
             "Notes": notes,
         }
     )
@@ -206,22 +203,15 @@ set_access_token(userdata.get("TABPFN_TOKEN"))
 
 *Default settings, the raw dataframe, no resampling.*
 
-`fit` uploads the training table; the model does its in-context learning on Prior Labs' servers when
-`predict_proba` is called, so the predict timing includes the round-trip for the 227,845 training rows. There
-are no hyperparameters to set and no class weights to pick.
+`fit` uploads the training table and `predict_proba` runs the in-context learning on Prior Labs' servers.
+There are no hyperparameters to set and no class weights to pick.
 
 ```python
 tabpfn = TabPFNClassifier()
-
-t0 = time.perf_counter()
 tabpfn.fit(X_train, y_train)
-fit_tabpfn = time.perf_counter() - t0
-
-t0 = time.perf_counter()
 proba_tabpfn = tabpfn.predict_proba(X_test)[:, 1]
-predict_tabpfn = time.perf_counter() - t0
 
-evaluate("TabPFN 3.5 (client, default)", proba_tabpfn, fit_tabpfn, predict_tabpfn, "hosted API")
+evaluate("TabPFN 3.5 (client, default)", proba_tabpfn, "hosted API")
 ```
 
 ```console
@@ -268,28 +258,18 @@ def fit_xgb_reference(X_fit, y_fit):
     return model
 
 
-t0 = time.perf_counter()
 xgb_ref = fit_xgb_reference(X_train, y_train)
-fit_s = time.perf_counter() - t0
-t0 = time.perf_counter()
 proba_xgb_ref = xgb_ref.predict_proba(X_test)[:, 1]
-evaluate("XGBoost (Kaggle configuration)", proba_xgb_ref, fit_s, time.perf_counter() - t0,
+evaluate("XGBoost (Kaggle configuration)", proba_xgb_ref,
          f"max_depth=2, early stopping, best_iteration={xgb_ref.best_iteration}")
 
-t0 = time.perf_counter()
 xgb_default = XGBClassifier(random_state=RANDOM_STATE, n_jobs=-1).fit(X_train, y_train)
-fit_s = time.perf_counter() - t0
-t0 = time.perf_counter()
 proba_xgb_default = xgb_default.predict_proba(X_test)[:, 1]
-evaluate("XGBoost (library defaults)", proba_xgb_default, fit_s, time.perf_counter() - t0,
-         "XGBClassifier()")
+evaluate("XGBoost (library defaults)", proba_xgb_default, "XGBClassifier()")
 
-t0 = time.perf_counter()
 rf = RandomForestClassifier(n_estimators=100, random_state=RANDOM_STATE, n_jobs=-1).fit(X_train, y_train)
-fit_s = time.perf_counter() - t0
-t0 = time.perf_counter()
 proba_rf = rf.predict_proba(X_test)[:, 1]
-evaluate("Random forest (100 trees)", proba_rf, fit_s, time.perf_counter() - t0, "n_estimators=100")
+evaluate("Random forest (100 trees)", proba_rf, "n_estimators=100")
 ```
 
 ```console
@@ -305,8 +285,6 @@ Random forest (100 trees): AUPRC 0.8734 | ROC AUC 0.9630 | 86 of 98 frauds in th
 TabPFN leads on both ranking metrics and puts the most frauds into the top 100 without any threshold
 tuning. Every ROC AUC sits above 0.92 and the top three are within three points of each other, which is
 exactly why the dataset authors ask for AUPRC: there the spread between the same models is twelve points.
-The tree models train in seconds on a CPU; TabPFN's time is the API round-trip for a 228k-row table, most
-of it spent in `predict_proba`, where the hosted model does its in-context learning.
 
 ```python
 table = pd.DataFrame(results)
@@ -316,11 +294,11 @@ print(table.to_string(index=False))
 ```
 
 ```console
-                         Model  AUPRC ROC AUC  Frauds in top 100 Fit time Predict time                                           Notes
-  TabPFN 3.5 (client, default) 0.9014  0.9902                 85     4.7s       171.7s                                      hosted API
-XGBoost (Kaggle configuration) 0.8382  0.9719                 82     1.2s         0.0s max_depth=2, early stopping, best_iteration=110
-    XGBoost (library defaults) 0.7813  0.9219                 79     0.4s         0.0s                                 XGBClassifier()
-     Random forest (100 trees) 0.8734  0.9630                 86     2.8s         0.0s                                n_estimators=100
+                         Model  AUPRC ROC AUC  Frauds in top 100                                           Notes
+  TabPFN 3.5 (client, default) 0.9014  0.9902                 85                                      hosted API
+XGBoost (Kaggle configuration) 0.8382  0.9719                 82 max_depth=2, early stopping, best_iteration=110
+    XGBoost (library defaults) 0.7813  0.9219                 79                                 XGBClassifier()
+     Random forest (100 trees) 0.8734  0.9630                 86                                n_estimators=100
 ```
 
 ## Precision-recall curves
@@ -365,8 +343,7 @@ plt.show()
 A test set with 98 frauds is small, and the AUPRC of any model moves by a few points from split to split. To
 check that the ranking is not an artifact of one split, we run all models on five stratified folds. Each
 model is fit on 80% of the data and scored on the remaining 20%, so every transaction is a test row exactly
-once. Same columns, same configurations, no tuning on the folds. This cell makes five TabPFN calls of the
-same size as the one above, so it takes a few times longer.
+once. Same columns, same configurations, no tuning on the folds.
 
 ```python
 skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
