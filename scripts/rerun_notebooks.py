@@ -48,24 +48,15 @@ COLAB_SHIM_DIR = SCRIPTS_DIR / "colab_shim"
 EXECUTOR = SCRIPTS_DIR / "_execute_notebook.py"
 WORK_DIR = ROOT / ".rerun"
 
-# Notebooks whose saved outputs come from a TabPFN model (hosted API or the
-# local ``tabpfn`` package) and therefore change with every model release.
-# The remaining notebooks train their own model or use a separate stack.
-MODEL_DEPENDENT_SLUGS = (
-    "quickstart",
-    "insurance_claim_modeling",
-    "predictive_distribution",
-    "tabpfn_vs_xgboost",
-    "experiment_with_thinking_mode",
-    "generate_synthetic_data",
-    "faster_performance_with_cache",
-    "forecast_spare_parts_demand",
-    "bayesian_optimization",
-    "interpret_results",
-    "decoder_readout",
-)
-# Not in the list: time_series_interpretability. tabpfn-time-series loads its
-# own time-series checkpoint, so the default model release does not affect it.
+# A notebook's saved outputs change with a model release when it installs one
+# of these packages, i.e. it runs the default TabPFN model directly. Notebooks
+# that bring their own model (nanoTabPFN, TabPFN-Rel, tabpfn-time-series with
+# its pinned checkpoint) install none of them and are skipped automatically.
+MODEL_PACKAGES = frozenset({"tabpfn", "tabpfn-client", "tabpfn-extensions"})
+
+# Cookbooks that compare model versions on purpose. Their outputs must stay as
+# recorded, so they are excluded from the default run.
+COMPARISON_SLUGS = frozenset({"tabpfn_35_vs_baselines", "zomato_model_comparison"})
 
 # Packages the in-kernel executor needs on top of the notebook's own. Colab
 # ships ipywidgets, so tqdm and friends expect it. Nothing else is added on
@@ -119,6 +110,15 @@ def pip_requirements(notebook_path: Path) -> list[str]:
                 if token not in specs:
                     specs.append(token)
     return specs
+
+
+def installs_model_package(notebook_path: Path) -> bool:
+    """True when the notebook's pip install lines pull in a TabPFN model package."""
+    for spec in pip_requirements(notebook_path):
+        name = re.split(r"[\[<>=!~;@ ]", spec, maxsplit=1)[0].lower().replace("_", "-")
+        if name in MODEL_PACKAGES:
+            return True
+    return False
 
 
 def pip_only_cell_indices(notebook_path: Path) -> list[int]:
@@ -199,7 +199,11 @@ def main() -> int:
             for path in discover_slug_paths(NOTEBOOKS_DIR, extension=".ipynb", slug=slug, label="notebook")
         ]
     else:
-        paths = [NOTEBOOKS_DIR / f"{slug}.ipynb" for slug in MODEL_DEPENDENT_SLUGS]
+        paths = [
+            path
+            for path in discover_slug_paths(NOTEBOOKS_DIR, extension=".ipynb", label="notebook")
+            if path.stem not in COMPARISON_SLUGS and installs_model_package(path)
+        ]
     paths = [path for path in paths if path.stem not in set(args.skip)]
     missing = [path.name for path in paths if not path.exists()]
     if missing:

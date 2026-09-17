@@ -74,28 +74,6 @@ Same-repo PRs get a Mintlify docs preview comment when opened; fork PRs still ge
 | `uv run python scripts/convert_to_markdown.py --slug <slug>` | After editing a notebook (or `--all`) |
 | `uv run python scripts/process_markdown.py --slug <slug>` | After editing `authors` / `colab_url` on a markdown-only recipe |
 | `uv run python scripts/validate.py --all` | Before opening or updating a PR |
-| `uv run python scripts/rerun_notebooks.py` | After a TabPFN model release, to refresh saved outputs |
-
-### Refresh notebook outputs
-
-Saved outputs go stale when a new TabPFN model ships. `scripts/rerun_notebooks.py` re-executes notebooks headlessly, writes the fresh outputs back into the `.ipynb`, and regenerates the MDX:
-
-```bash
-export TABPFN_TOKEN=...                                   # hosted-API notebooks need it
-uv run python scripts/rerun_notebooks.py                  # every notebook whose outputs depend on the model
-uv run python scripts/rerun_notebooks.py --slug quickstart --slug tabpfn_vs_xgboost
-uv run python scripts/rerun_notebooks.py --all --skip pretrain_nanotabpfn --keep-going
-```
-
-How it works:
-
-- Each notebook runs in its own `uv run` environment built from the notebook's `pip install` line, on Python 3.12 like Colab. Install-only cells are skipped and their outputs cleared.
-- `google.colab.userdata` is replaced by a shim (`scripts/colab_shim/`) that reads the secret from the environment variable of the same name.
-- Local-inference notebooks use the GPU when one is available. Timings in the outputs then reflect that machine rather than Colab's, so check the prose still matches.
-- A failed run leaves the notebook untouched and writes the partially executed copy to `.rerun/`.
-- To run against a staging API or local weights, pass the override through the environment (`TABPFN_CLIENT_API_URL`, `TABPFN_MODEL_CACHE_DIR`) rather than editing the notebook.
-
-The list of model-dependent notebooks lives in `MODEL_DEPENDENT_SLUGS` in the script. Review the diff before committing. The packages that produced the outputs are the newest releases at the time of the run, since nothing is pinned; note the run date in the commit message.
 
 ### Optional frontmatter extras
 
