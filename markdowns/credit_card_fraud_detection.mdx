@@ -48,7 +48,7 @@ hands it the raw dataframe through the hosted API (`tabpfn-client`), so no GPU i
 result with the reference models from the most popular Kaggle notebooks, trained on exactly the same columns
 with no feature engineering, so the comparison stays fair.
 
-**Bottom line up front:**
+**Summary:**
 
 - **One fit, one predict, no imbalance tricks.** TabPFN reaches an AUPRC of about **0.90** and a ROC AUC of
   about **0.99** on a held-out 20% split, straight from the 30 raw columns.
@@ -61,22 +61,21 @@ with no feature engineering, so the comparison stays fair.
 
 ## Setup
 
-*Installing the TabPFN client, the Kaggle download helper, and the reference models.*
+*Installing the TabPFN client, the Kaggle download helper, and the reference models, pinned to the versions this notebook was run with.*
 
 ```python
-!pip install tabpfn-client kagglehub xgboost scikit-learn pandas matplotlib
+!pip install tabpfn-client==0.6.0 kagglehub==1.0.2 xgboost==3.4.1 scikit-learn==1.9.0 pandas==2.3.3 matplotlib==3.11.2
 ```
 
 ## Load the data
 
 *Downloading the dataset from Kaggle and taking a first look.*
 
-`kagglehub` downloads public datasets without a Kaggle account. The table has no missing values, and all 30
+`kagglehub` loads public datasets straight into a dataframe without a Kaggle account. The table has no missing values, and all 30
 feature columns are numeric. We drop nothing and engineer nothing: `Time` (seconds since the first
 transaction), `Amount`, and `V1` to `V28` go into every model exactly as they arrive.
 
 ```python
-import os
 import warnings
 
 import kagglehub
@@ -84,6 +83,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from google.colab import userdata
+from kagglehub import KaggleDatasetAdapter
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score
 from sklearn.model_selection import StratifiedKFold, train_test_split
@@ -94,8 +94,7 @@ warnings.filterwarnings("ignore", message="Optional dependencies 'tabpfn' and 't
 
 RANDOM_STATE = 42
 
-path = kagglehub.dataset_download("mlg-ulb/creditcardfraud")
-df = pd.read_csv(os.path.join(path, "creditcard.csv"))
+df = kagglehub.dataset_load(KaggleDatasetAdapter.PANDAS, "mlg-ulb/creditcardfraud", "creditcard.csv")
 
 X = df.drop(columns="Class")
 y = df["Class"]
@@ -193,10 +192,18 @@ The client reads the API key through `set_access_token`. Here we pull it from Co
 set the `TABPFN_TOKEN` environment variable. Get a token at
 [platform.priorlabs.ai](https://platform.priorlabs.ai).
 
+We pin the model to TabPFN 3.5 with `create_default_for_version`, so the numbers in this notebook stay
+reproducible after future releases. Use `TabPFNClassifier()` instead to always get the current default model.
+
 ```python
 from tabpfn_client import TabPFNClassifier, set_access_token
+from tabpfn_client.api_models import ModelVersion
 
 set_access_token(userdata.get("TABPFN_TOKEN"))
+
+
+def make_tabpfn():
+    return TabPFNClassifier.create_default_for_version(ModelVersion.V3_5)
 ```
 
 ## TabPFN
@@ -207,7 +214,7 @@ set_access_token(userdata.get("TABPFN_TOKEN"))
 There are no hyperparameters to set and no class weights to pick.
 
 ```python
-tabpfn = TabPFNClassifier()
+tabpfn = make_tabpfn()
 tabpfn.fit(X_train, y_train)
 proba_tabpfn = tabpfn.predict_proba(X_test)[:, 1]
 
@@ -282,8 +289,8 @@ Random forest (100 trees): AUPRC 0.8734 | ROC AUC 0.9630 | 86 of 98 frauds in th
 
 *One table, four models, the same 30 columns.*
 
-TabPFN leads on both ranking metrics and puts the most frauds into the top 100 without any threshold
-tuning. Every ROC AUC sits above 0.92 and the top three are within three points of each other, which is
+TabPFN leads on both ranking metrics, and on the top 100 it is level with the random forest (85 versus 86
+frauds) without any threshold tuning. Every ROC AUC sits above 0.92 and the top three are within three points of each other, which is
 exactly why the dataset authors ask for AUPRC: there the spread between the same models is twelve points.
 
 ```python
@@ -353,7 +360,7 @@ for fold, (train_idx, test_idx) in enumerate(skf.split(X, y), start=1):
     y_tr, y_te = y.iloc[train_idx], y.iloc[test_idx]
     row = {"Fold": fold, "Test frauds": int(y_te.sum())}
     row["TabPFN 3.5"] = average_precision_score(
-        y_te, TabPFNClassifier().fit(X_tr, y_tr).predict_proba(X_te)[:, 1])
+        y_te, make_tabpfn().fit(X_tr, y_tr).predict_proba(X_te)[:, 1])
     row["XGBoost (Kaggle configuration)"] = average_precision_score(
         y_te, fit_xgb_reference(X_tr, y_tr).predict_proba(X_te)[:, 1])
     row["XGBoost (library defaults)"] = average_precision_score(
