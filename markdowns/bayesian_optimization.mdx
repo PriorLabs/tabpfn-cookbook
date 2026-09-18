@@ -1,7 +1,7 @@
 ---
 title: Bayesian Optimization with TabPFN Extensions
 description: Use TabPFN as a Bayesian optimization surrogate via tabpfn-extensions
-  and compare it against a BoTorch GP and random search on Rosenbrock-4.
+  and compare it against a BoTorch GP and random search on Michalewicz-2.
 cookbookTags:
 - extensions
 - optimization
@@ -35,7 +35,7 @@ colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/bl
 {/* cookbook-meta:end process_markdown.py */}
 *Use TabPFN as the surrogate model inside a Bayesian optimization loop.*
 
-This cookbook turns the `tabpfn-extensions` Bayesian optimization example into a step-by-step notebook. We optimize the 4D Rosenbrock benchmark and compare TabPFN-driven search against two baselines under the same evaluation budget: BoTorch's Gaussian process with LogEI, the standard choice for this kind of problem, and random search. Along the way we show how `propose_next_point()` uses the predictive distribution from TabPFN to compute Expected Improvement (EI).
+This cookbook turns the `tabpfn-extensions` Bayesian optimization example into a step-by-step notebook. We optimize the 2D Michalewicz benchmark and compare TabPFN-driven search against two baselines under the same evaluation budget: BoTorch's Gaussian process with LogEI, the standard choice for this kind of problem, and random search. Along the way we show how `propose_next_point()` uses the predictive distribution from TabPFN to compute Expected Improvement (EI).
 
 A single run tells you very little — the starting design alone can decide the outcome. So we repeat the whole experiment **5 times** with different initial designs and report the mean with a min–max band.
 
@@ -72,7 +72,7 @@ from botorch.fit import fit_gpytorch_mll
 from botorch.models import SingleTaskGP
 from botorch.models.transforms import Normalize, Standardize
 from botorch.optim import optimize_acqf
-from botorch.test_functions import Rosenbrock
+from botorch.test_functions import Michalewicz
 from gpytorch.mlls import ExactMarginalLogLikelihood
 
 from tabpfn import TabPFNRegressor
@@ -81,30 +81,29 @@ from tabpfn_extensions.bayesian_optimization import propose_next_point
 
 ## The Optimization Problem
 
-Rosenbrock-4 is a four-dimensional benchmark with a narrow, curved valley: easy to fall into, hard to walk along. Its optimum is `0.0` at `(1, 1, 1, 1)`, and random search burns most of its budget far outside the valley.
+Michalewicz-2 is a two-dimensional benchmark with steep, narrow valleys separated by flat plateaus on `[0, π]^2`. After negation its optimum is `1.8013` at about `(2.20, 1.57)`. The plateaus carry almost no signal, so a stationary GP kernel has little to go on early, and random search rarely lands in the right valley.
 
 The TabPFN surrogate predicts a **full bar distribution** over the objective value. `propose_next_point()` computes Expected Improvement exactly on that distribution — no Gaussian assumption — for a large batch of random candidates, then refines the most promising ones by sampling around them with a shrinking Gaussian. That optimizer is gradient-free, so it needs nothing special from the regressor.
 
 Two details worth calling out:
 
 - `negate=True` turns the minimization benchmark into a maximization problem, which is what EI expects; `optimal_value` follows the sign.
-- The optimizer searches the unit cube `[0, 1]^4`, but Rosenbrock lives on `[-5, 10]^4`, so every candidate is mapped onto the problem's own bounds before evaluation.
+- The optimizer searches the unit cube `[0, 1]^2`, but Michalewicz lives on `[0, π]^2`, so every candidate is mapped onto the problem's own bounds before evaluation.
 
 ```python
 N_INIT = 10  # scrambled-Sobol points that every method starts from
-N_BO_STEPS = 25  # one objective evaluation per step
+N_BO_STEPS = 40  # one objective evaluation per step
 N_SEEDS = 5  # independent repeats, each with its own initial design
 N_ESTIMATORS = 8  # TabPFN ensemble size
-GAP_FLOOR = 1e-3  # the log axis needs a positive floor
+GAP_FLOOR = 1e-4  # the log axis needs a positive floor
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Device: {DEVICE}")
 
-# EI maximizes the objective, so we negate Rosenbrock to turn its optimum into a maximum.
-objective = Rosenbrock(dim=4, negate=True).to(DEVICE)
+# EI maximizes the objective, so we negate Michalewicz to turn its optimum into a maximum.
+objective = Michalewicz(dim=2, negate=True).to(DEVICE)
 LO, HI = objective.bounds[0], objective.bounds[1]
-# `optimal_value` comes back as -0.0 after negation; `+ 0.0` normalises the sign.
-print(f"Objective optimum: {objective.optimal_value + 0.0:.4f} on {LO.tolist()}..{HI.tolist()}")
+print(f"Objective optimum: {objective.optimal_value:.4f} on {LO.tolist()}..{HI.tolist()}")
 
 
 def evaluate(unit_x: torch.Tensor) -> torch.Tensor:
@@ -114,14 +113,14 @@ def evaluate(unit_x: torch.Tensor) -> torch.Tensor:
 
 ```console
 Device: cpu
-Objective optimum: 0.0000 on [-5.0, -5.0, -5.0, -5.0]..[10.0, 10.0, 10.0, 10.0]
+Objective optimum: 1.8013 on [0.0, 0.0]..[3.141592653589793, 3.141592653589793]
 ```
 
 ## Build the TabPFN Surrogate
 
 *An ordinary `TabPFNRegressor` is all it takes.*
 
-Nothing in the loop needs gradients with respect to the inputs, so we use the plain regressor with its full ensemble of 8 estimators. Those are the settings we validated on the continuous BoTorch benchmark suite (eight synthetic functions, 32 seeds, 250 evaluations each): an 8-estimator TabPFN with exact EI and this sampled optimizer had the best mean rank against BoTorch's GP with EI and LogEI at 250 evaluations, while the GP led on the smooth single-basin functions early on. Rosenbrock's smooth valley is closer to the GP's home turf, so it is a fair test rather than a showcase.
+Nothing in the loop needs gradients with respect to the inputs, so we use the plain regressor with its full ensemble of 8 estimators. Those are the settings we validated on the continuous BoTorch benchmark suite (eight synthetic functions, 32 seeds, 250 evaluations each): an 8-estimator TabPFN with exact EI and this sampled optimizer had the best mean rank against BoTorch's GP with EI and LogEI at 250 evaluations, while the GP led on the smooth single-basin functions (Branin, Hartmann-3, Rosenbrock-like valleys) early on. Michalewicz is one of the multimodal functions where TabPFN was clearly ahead, by about 7× in mean regret at 50 evaluations, so it is where the difference shows within a notebook-sized budget.
 
 Each repeat gets its own surrogate, seeded with that repeat's index, so the runs are independent. Keep TabPFN on `cpu` or `cuda`; Apple's `mps` backend is an order of magnitude slower here.
 
@@ -213,18 +212,18 @@ gaps = {name: np.array(runs) for name, runs in gaps.items()}  # (N_SEEDS, N_INIT
 ```
 
 ```console
-repeat 0: TabPFN-EI gap     85.43 | GP-LogEI (BoTorch) gap     170.1 | Random search gap      6576
-repeat 1: TabPFN-EI gap     136.2 | GP-LogEI (BoTorch) gap     876.4 | Random search gap      3497
-repeat 2: TabPFN-EI gap     228.4 | GP-LogEI (BoTorch) gap     333.8 | Random search gap      2376
-repeat 3: TabPFN-EI gap     922.9 | GP-LogEI (BoTorch) gap     354.8 | Random search gap      1119
-repeat 4: TabPFN-EI gap      1062 | GP-LogEI (BoTorch) gap     45.13 | Random search gap      3824
+repeat 0: TabPFN-EI gap   0.02054 | GP-LogEI (BoTorch) gap    0.9174 | Random search gap    0.6139
+repeat 1: TabPFN-EI gap    0.0001 | GP-LogEI (BoTorch) gap    0.4345 | Random search gap    0.8131
+repeat 2: TabPFN-EI gap 0.0004174 | GP-LogEI (BoTorch) gap   0.01936 | Random search gap      0.37
+repeat 3: TabPFN-EI gap    0.0001 | GP-LogEI (BoTorch) gap    0.6038 | Random search gap    0.7984
+repeat 4: TabPFN-EI gap  0.001125 | GP-LogEI (BoTorch) gap    0.1895 | Random search gap    0.8819
 ```
 
 ## Compare the Three Methods
 
 *Same objective, same budget, same starting points — only the choice of the next point differs.*
 
-Rosenbrock values span several orders of magnitude, so we report the **gap to the optimum** (`optimum - best so far`) rather than the raw objective. Lower is better.
+We report the **gap to the optimum** (`optimum - best so far`, the simple regret) on a log axis rather than the raw objective. Lower is better.
 
 ```python
 for name, runs in gaps.items():
@@ -236,9 +235,9 @@ for name, runs in gaps.items():
 ```
 
 ```console
-TabPFN-EI            final gap over 5 repeats: mean       487 | median     228.4 | best     85.43
-GP-LogEI (BoTorch)   final gap over 5 repeats: mean     356.1 | median     333.8 | best     45.13
-Random search        final gap over 5 repeats: mean      3478 | median      3497 | best      1119
+TabPFN-EI            final gap over 5 repeats: mean  0.004456 | median 0.0004174 | best    0.0001
+GP-LogEI (BoTorch)   final gap over 5 repeats: mean    0.4329 | median    0.4345 | best   0.01936
+Random search        final gap over 5 repeats: mean    0.6954 | median    0.7984 | best      0.37
 ```
 
 ```python
@@ -259,7 +258,7 @@ for name, color in [
     ax.plot(evals, runs.mean(0), color=color, lw=2, label=name)
 ax.axvline(N_INIT, color="#898781", lw=1, ls=(0, (2, 3)))
 
-ax.set_title("Rosenbrock-4", fontsize=11, color="#0b0b0b", loc="left", fontweight="bold", pad=8)
+ax.set_title("Michalewicz-2", fontsize=11, color="#0b0b0b", loc="left", fontweight="bold", pad=8)
 ax.grid(visible=True, axis="y", color="#e1e0d9", linewidth=0.6)
 ax.set_axisbelow(True)
 for side in ("top", "right"):
@@ -290,6 +289,6 @@ plt.show()
 ## Takeaways
 
 - `tabpfn-extensions` provides the Bayesian optimization loop primitive, `propose_next_point()`, and it works with a plain `TabPFNRegressor`: exact EI on TabPFN's predicted distribution, maximized by a gradient-free sampled optimizer.
-- On Rosenbrock-4 with this small budget, TabPFN-EI ends well ahead of random search on every repeat and in the same range as BoTorch's GP with LogEI: ahead on three of the five repeats, behind on two, with a lower median and a higher mean. The starting design matters a lot at 35 evaluations.
-- Where TabPFN pulls clearly ahead of the GP in our larger benchmark is on multimodal functions with steep valleys (Ackley, Michalewicz) and at larger budgets, once its context has grown past a few dozen points. Use more evaluations and more repeats for a clean comparison on your own problem.
+- On Michalewicz-2 with 50 evaluations, TabPFN-EI gets within `1e-3` of the optimum on four of the five repeats and within `0.02` on the fifth (mean gap 0.0045, median 0.0004). GP-LogEI ends at a mean gap of 0.43 and random search at 0.70. TabPFN is ahead of the GP on every repeat, by a factor between 20 and 2000.
+- The picture is function-dependent. In our larger benchmark the GP is ahead early on smooth single-basin functions such as Branin and Hartmann-3 and wins on final precision there; TabPFN leads on multimodal functions like this one and Ackley, and overall from about 100 evaluations on, once its context has grown. Use more evaluations and more repeats for a clean comparison on your own problem.
 - For more background, start with the upstream [example](https://github.com/PriorLabs/tabpfn-extensions/blob/main/examples/bayesian_optimization/bayesian_optimization.py) and the [`tabpfn-extensions` repo](https://github.com/PriorLabs/tabpfn-extensions).
