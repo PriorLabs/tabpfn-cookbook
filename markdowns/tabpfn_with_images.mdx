@@ -1,7 +1,7 @@
 ---
 title: Predicting from Images and Tabular Data Together
-description: Put chest X-rays in a DataFrame column next to patient fields and radiology
-  labels, and let TabPFN predict from both with TabPFNWithImages from tabpfn-extensions.
+description: Put chest X-rays in a DataFrame column next to patient fields, and let
+  TabPFN predict from both with TabPFNWithImages from tabpfn-extensions.
 icon: images
 cookbookTags:
 - extensions
@@ -40,7 +40,7 @@ Real-world tables aren't strictly confined to just numbers and categories. Every
 
 This cookbook shows the simplest bridge: `TabPFNWithImages` from `tabpfn-extensions`. You keep your dataset as it is, tell the wrapper which column holds images, and it turns each picture into a handful of numeric features before TabPFN sees it.
 
-The motivation comes from the [MulTaBench paper](https://arxiv.org/abs/2605.10616), which curates 40 datasets where combining tabular fields with an image or a text provably beats either modality alone. We use one of its image tasks, CheXpert: decide whether a chest X-ray shows cardiomegaly, an enlarged heart, from the scan together with the patient's sex and age, the view of the scan and the other radiology labels attached to the study. The full MulTaBench task has around 45000 studies; we use the 5000-row subsample published on Kaggle, so the notebook stays quick.
+The motivation comes from the [MulTaBench paper](https://arxiv.org/abs/2605.10616), which curates 40 datasets where combining tabular fields with an image or a text provably beats either modality alone. We use one of its image tasks, CheXpert: decide whether a chest X-ray shows cardiomegaly, an enlarged heart, from the scan together with the patient's sex and age and the view of the scan. The full MulTaBench task has 46,437 X-rays and 17 tabular columns, most of them other radiology labels. To keep the notebook quick we use a toy version published on Kaggle: a random 5,000-row subsample that keeps only the four patient fields and the target. The scores below are for this toy task and are not comparable with the benchmark's numbers.
 
 ## Setup
 
@@ -48,7 +48,7 @@ The image extension for TabPFN ships in `tabpfn-extensions[image]`.
 
 Two things need a one-time acceptance. The image encoder's weights, DINOv3, are gated on the Hugging Face Hub: accept the license on the [model page](https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m), then run `hf auth login` in a terminal or set the `HF_TOKEN` environment variable. The local `tabpfn` package also asks you to accept its license the first time it downloads model weights; in a notebook, set `TABPFN_TOKEN` to an API key from the [TabPFN platform](https://platform.priorlabs.ai/account/api-keys).
 
-A GPU is recommended for the full subsample: embedding 5000 X-rays and fitting TabPFN on 3750 rows is a few minutes on a T4 and much longer on a CPU. Without one, the notebook runs on a 300-row sample so every cell finishes quickly. Set `N_ROWS = None` to use everything.
+A GPU is recommended for the full toy subsample: embedding 5,000 X-rays and fitting TabPFN on 3,750 rows is a few minutes on a T4 and much longer on a CPU. Without one, the notebook runs on a 300-row sample so every cell finishes quickly. Set `N_ROWS = None` to use everything.
 
 ```python
 %pip install -q "tabpfn-extensions[image] @ git+https://github.com/PriorLabs/tabpfn-extensions" kagglehub matplotlib
@@ -95,10 +95,10 @@ device: cuda, rows: all
 
 ## Load and inspect the data
 
-We fetch the CheXpert subsample from Kaggle. Each row is one chest X-ray study: the patient's sex and age, whether the view is frontal or lateral and AP or PA, thirteen other radiology labels extracted from the report (1 positive, 0 negative, -1 uncertain, blank when the report does not mention the finding), `X-Ray Image`, which is the path of the scan relative to the archive, and the target `Cardiomegaly` with the same three-way coding. Most label cells are blank; TabPFN handles missing values natively, so we leave them as they are.
+We fetch the toy CheXpert subsample from Kaggle. Each row is one chest X-ray study: the patient's sex and age, whether the view is frontal or lateral and, for frontal views, whether it was taken AP or PA, `X-Ray Image`, which is the path of the scan relative to the archive, and the target `Cardiomegaly`, coded 1 for positive, 0 for negative and -1 when the radiology report was uncertain. `AP/PA` is blank for lateral views; TabPFN handles missing values natively, so we leave it as it is.
 
 ```python
-root = Path(kagglehub.dataset_download("chico89/multabench-chexpert-subsampled"))
+root = Path(kagglehub.dataset_download("chico89/multabench-chexpert-toy-subsampled"))
 data = pd.read_csv(root / "data.csv")
 if N_ROWS is not None:
     data = data.sample(n=N_ROWS, random_state=0).reset_index(drop=True)
@@ -107,7 +107,7 @@ data.head()
 ```
 
 ```console
-Downloading to /root/.cache/kagglehub/datasets/chico89/multabench-chexpert-subsampled/2.archive...
+Downloading to /mnt/local-ssd/kagglehub/datasets/chico89/multabench-chexpert-toy-subsampled/1.archive...
 Extracting files...
 (5000, 6)
       Sex  Age Frontal/Lateral AP/PA  \
@@ -169,9 +169,9 @@ train: 3750 rows, test: 1250 rows
 1366  Female   27         Frontal    AP
 
                                                   image
-1524  /root/.cache/kagglehub/datasets/chico89/multab...
-4697  /root/.cache/kagglehub/datasets/chico89/multab...
-1366  /root/.cache/kagglehub/datasets/chico89/multab...
+1524  /mnt/local-ssd/kagglehub/datasets/chico89/mult...
+4697  /mnt/local-ssd/kagglehub/datasets/chico89/mult...
+1366  /mnt/local-ssd/kagglehub/datasets/chico89/mult...
 ```
 
 ## How it works
@@ -182,7 +182,7 @@ Those 384 numbers are standardised and reduced to 30 with principal component an
 
 ## Baseline: tabular fields only
 
-*Plain TabPFN on sex, age, view and the other radiology labels.*
+*Plain TabPFN on sex, age and view.*
 
 We start without the X-ray, so we know what the tabular fields alone are worth. The target has three classes, so we score with macro-averaged one-vs-rest ROC AUC, where 0.5 is random guessing and 1.0 is perfect.
 
@@ -224,12 +224,12 @@ print(f"ROC AUC, picture only: {results['picture only']:.3f}")
 ```
 
 ```console
-ROC AUC, picture only: 0.697
+ROC AUC, picture only: 0.698
 ```
 
 ## Tabular + picture
 
-Now the frame has the seventeen tabular columns followed by `image`, so the image column sits at position `len(tabular)`. Everything else is unchanged.
+Now the frame has the four tabular columns followed by `image`, so the image column sits at position `len(tabular)`. Everything else is unchanged.
 
 ```python
 columns = [*tabular, "image"]
@@ -243,33 +243,19 @@ print(f"ROC AUC, tabular + picture: {results['tabular + picture']:.3f}")
 ```
 
 ```console
-ROC AUC, tabular + picture: 0.702
+ROC AUC, tabular + picture: 0.703
 ```
 
 ```python
 scores = pd.Series(results, name="ROC AUC").to_frame()
 display(scores.round(3))
-
-fig, ax = plt.subplots(figsize=(6, 2.6))
-ax.barh(list(results), list(results.values()), color=["#9aa5b1", "#9aa5b1", "#2f6fed"])
-ax.axvline(0.5, linestyle="--", color="grey", linewidth=1)
-ax.text(0.5, -0.55, "random guess", fontsize=8, color="grey", ha="center")
-ax.set_xlim(0.4, 1.0)
-ax.set_xlabel("ROC AUC on the test set (higher is better)")
-ax.invert_yaxis()
-for spine in ("top", "right"):
-    ax.spines[spine].set_visible(False)
-plt.tight_layout()
-plt.show()
 ```
 
 ```console
                    ROC AUC
 tabular only         0.621
-picture only         0.697
-tabular + picture    0.702
+picture only         0.698
+tabular + picture    0.703
 ```
 
-![Tabular + picture](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn_with_images/plot-02.png)
-
-Whether the tabular fields or the X-ray come out ahead on their own depends on the split and on how many rows you use, but the point of the exercise is the third bar: the scan carries signal about an enlarged heart that the patient's fields and the other labels do not have, and the tabular fields carry signal the scan does not have, so the combined model should be the best of the three. That is not a lucky pick of dataset. MulTaBench only includes tasks where "both beats either" held across several different learners, so this pattern is what the benchmark was built to isolate. For more tasks, the [paper](https://arxiv.org/abs/2605.10616) and the [MulTaBench datasets on Kaggle](https://www.kaggle.com/chico89/datasets) have 20 image-tabular tasks, all downloadable with `kagglehub` like the one used here.
+On this toy task the X-ray alone is well ahead of the four patient fields alone, and the combined model comes out on top. The point of the exercise is the third row: the scan carries signal about an enlarged heart that the patient's fields do not have, and the fields carry signal the scan does not have, so adding the fields to the scan still buys half a point of AUC. That is not a lucky pick of dataset. MulTaBench only includes tasks where "both beats either" held across several different learners on the full data, so this pattern is what the benchmark was built to isolate. For more tasks, the [paper](https://arxiv.org/abs/2605.10616) and the [MulTaBench datasets on Kaggle](https://www.kaggle.com/chico89/datasets) have 20 image-tabular tasks, all downloadable with `kagglehub` like the one used here.
