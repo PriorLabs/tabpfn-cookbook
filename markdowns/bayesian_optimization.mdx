@@ -1,7 +1,7 @@
 ---
 title: Bayesian Optimization with TabPFN Extensions
 description: Use TabPFN as a Bayesian optimization surrogate via tabpfn-extensions
-  and compare it against random search on Rosenbrock-4.
+  and compare it against a BoTorch GP and random search on Rosenbrock-4.
 cookbookTags:
 - extensions
 - optimization
@@ -35,9 +35,9 @@ colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/bl
 {/* cookbook-meta:end process_markdown.py */}
 *Use TabPFN as the surrogate model inside a Bayesian optimization loop.*
 
-This cookbook turns the `tabpfn-extensions` Bayesian optimization example into a step-by-step notebook. We optimize the 4D Rosenbrock benchmark, compare TabPFN-driven search against random search under the same evaluation budget, and show how `propose_next_point()` uses the predictive distribution from TabPFN to compute Expected Improvement (EI).
+This cookbook turns the `tabpfn-extensions` Bayesian optimization example into a step-by-step notebook. We optimize the 4D Rosenbrock benchmark and compare TabPFN-driven search against two baselines under the same evaluation budget: BoTorch's Gaussian process with LogEI, the standard choice for this kind of problem, and random search. Along the way we show how `propose_next_point()` uses the predictive distribution from TabPFN to compute Expected Improvement (EI).
 
-A single run tells you very little — the starting design alone can decide the outcome. So we repeat the whole experiment **5 times** with different random inits and report the mean with a min–max band.
+A single run tells you very little — the starting design alone can decide the outcome. So we repeat the whole experiment **5 times** with different initial designs and report the mean with a min–max band.
 
 Relevant resources:
 
@@ -50,20 +50,30 @@ Relevant resources:
 
 *Install the full TabPFN package plus the Bayesian optimization extras from `tabpfn-extensions`.*
 
-This example uses the local PyTorch-backed TabPFN implementation because the optimizer refines candidates with gradients (`differentiable_input=True`).
+This example uses the local PyTorch-backed TabPFN implementation, because the acquisition function reads TabPFN's predicted distribution directly. With `tabpfn>=9.0.0` the default model is TabPFN 3.5. The extras pull in BoTorch, which provides the GP baseline and the benchmark function.
 
 ```python
-%pip install -q -U "tabpfn-extensions[bayesian-optimization]" "tabpfn>=8.1.0" "tqdm>=4.63.0,<=4.67.3" matplotlib
+%pip install -q -U "tabpfn-extensions[bayesian_optimization]" "tabpfn>=9.0.0" matplotlib
 ```
 
-*TabPFN as the surrogate, BoTorch for the benchmark objective, and Matplotlib for a quick comparison plot.*
+*TabPFN as the surrogate, BoTorch for the GP baseline and the benchmark objective, and Matplotlib for the comparison plot.*
 
 ```python
+import warnings
+
+# botorch triggers a torch.jit deprecation warning on import; it is harmless here.
+warnings.filterwarnings("ignore", category=FutureWarning, message=r".*torch\.jit\.script.*")
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from botorch.acquisition import LogExpectedImprovement
+from botorch.fit import fit_gpytorch_mll
+from botorch.models import SingleTaskGP
+from botorch.models.transforms import Normalize, Standardize
+from botorch.optim import optimize_acqf
 from botorch.test_functions import Rosenbrock
-from tqdm.auto import trange
+from gpytorch.mlls import ExactMarginalLogLikelihood
 
 from tabpfn import TabPFNRegressor
 from tabpfn_extensions.bayesian_optimization import propose_next_point
@@ -73,7 +83,7 @@ from tabpfn_extensions.bayesian_optimization import propose_next_point
 
 Rosenbrock-4 is a four-dimensional benchmark with a narrow, curved valley: easy to fall into, hard to walk along. Its optimum is `0.0` at `(1, 1, 1, 1)`, and random search burns most of its budget far outside the valley.
 
-The TabPFN surrogate predicts a **full bar distribution** over the objective value. `propose_next_point()` uses that predictive distribution to compute Expected Improvement, then refines the most promising candidates with gradient ascent on the acquisition function itself.
+The TabPFN surrogate predicts a **full bar distribution** over the objective value. `propose_next_point()` computes Expected Improvement exactly on that distribution — no Gaussian assumption — for a large batch of random candidates, then refines the most promising ones by sampling around them with a shrinking Gaussian. That optimizer is gradient-free, so it needs nothing special from the regressor.
 
 Two details worth calling out:
 
@@ -81,13 +91,10 @@ Two details worth calling out:
 - The optimizer searches the unit cube `[0, 1]^4`, but Rosenbrock lives on `[-5, 10]^4`, so every candidate is mapped onto the problem's own bounds before evaluation.
 
 ```python
-N_INIT = 10
-N_BO_STEPS = 25
-N_SEEDS = 5
-N_CANDIDATES = 512
-TOP_K = 4
-N_REFINE_STEPS = 8
-REFINE_LR = 0.05
+N_INIT = 10  # scrambled-Sobol points that every method starts from
+N_BO_STEPS = 25  # one objective evaluation per step
+N_SEEDS = 5  # independent repeats, each with its own initial design
+N_ESTIMATORS = 8  # TabPFN ensemble size
 GAP_FLOOR = 1e-3  # the log axis needs a positive floor
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -112,49 +119,66 @@ Objective optimum: 0.0000 on [-5.0, -5.0, -5.0, -5.0]..[10.0, 10.0, 10.0, 10.0]
 
 ## Build the TabPFN Surrogate
 
-*The critical switch is `differentiable_input=True`.*
+*An ordinary `TabPFNRegressor` is all it takes.*
 
-That flag keeps gradients flowing from the acquisition value back into the candidate coordinates during refinement. We use a single estimator to stay close to the upstream example and keep runtime short on CPU.
+Nothing in the loop needs gradients with respect to the inputs, so we use the plain regressor with its full ensemble of 8 estimators. Those are the settings we validated on the continuous BoTorch benchmark suite (eight synthetic functions, 32 seeds, 250 evaluations each): an 8-estimator TabPFN with exact EI and this sampled optimizer had the best mean rank against BoTorch's GP with EI and LogEI at 250 evaluations, while the GP led on the smooth single-basin functions early on. Rosenbrock's smooth valley is closer to the GP's home turf, so it is a fair test rather than a showcase.
 
-Each repeat gets its own surrogate, seeded with that repeat's index, so the runs are independent.
+Each repeat gets its own surrogate, seeded with that repeat's index, so the runs are independent. Keep TabPFN on `cpu` or `cuda`; Apple's `mps` backend is an order of magnitude slower here.
 
 ```python
 def make_surrogate(seed: int) -> TabPFNRegressor:
-    return TabPFNRegressor(
-        n_estimators=1,
-        device=DEVICE,
-        random_state=seed,
-        inference_precision=torch.float32,
-        differentiable_input=True,
-    )
+    return TabPFNRegressor(n_estimators=N_ESTIMATORS, device=DEVICE, random_state=seed)
 ```
 
 ## Run Bayesian Optimization
 
-*Seed with random points, then let TabPFN propose the next evaluation point.*
+*Seed with a Sobol design, then let each method propose the next evaluation point.*
 
-Each iteration fits TabPFN on all observed evaluations so far, screens a random candidate pool with Expected Improvement, and refines the top candidates by gradient ascent before returning the next point to evaluate.
+Each TabPFN iteration fits the surrogate on all observed evaluations so far, scores 2048 random candidates with Expected Improvement in one forward pass, and refines the top 16 by sampling around them for three rounds before returning the next point to evaluate. The GP baseline is BoTorch's `SingleTaskGP` with LogEI, maximized with `optimize_acqf`, in the configuration of Ament et al. (NeurIPS 2023).
 
-We run that loop `N_SEEDS = 5` times. Within a repeat, both methods start from the **same** `N_INIT` random evaluations, so the two curves can only diverge once the acquisition function takes over.
+We run that loop `N_SEEDS = 5` times. Within a repeat, all three methods start from the **same** `N_INIT` scrambled-Sobol evaluations, so the curves can only diverge once the acquisition strategy takes over. On CPU the TabPFN loop takes a few minutes per repeat; on a GPU it is much faster.
 
 ```python
-def run_bo(init_x: torch.Tensor, init_y: torch.Tensor, seed: int) -> torch.Tensor:
-    """Run the loop from a fixed random init and return every observed y."""
+def run_tabpfn(init_x: torch.Tensor, init_y: torch.Tensor, seed: int) -> torch.Tensor:
+    """Run the TabPFN-EI loop from a fixed init and return every observed y."""
     reg = make_surrogate(seed)
     train_x, train_y = init_x.clone(), init_y.clone()
-    for _ in trange(N_BO_STEPS, desc=f"repeat {seed}", leave=False):
-        next_x = propose_next_point(
-            reg,
-            train_x,
-            train_y,
-            n_candidates=N_CANDIDATES,
-            top_k=TOP_K,
-            n_refine_steps=N_REFINE_STEPS,
-            refine_lr=REFINE_LR,
-        )
+    for _ in range(N_BO_STEPS):
+        next_x = propose_next_point(reg, train_x, train_y)
         train_x = torch.cat([train_x, next_x.unsqueeze(0)])
         train_y = torch.cat([train_y, evaluate(next_x.unsqueeze(0))])
     return train_y
+
+
+def run_gp_logei(init_x: torch.Tensor, init_y: torch.Tensor) -> torch.Tensor:
+    """BoTorch's GP with LogEI: refit the GP each round, maximize LogEI with L-BFGS-B."""
+    dim = init_x.shape[1]
+    unit_bounds = torch.stack(
+        [torch.zeros(dim, dtype=torch.double), torch.ones(dim, dtype=torch.double)]
+    )
+    train_x = init_x.double().cpu()
+    train_y = init_y.double().cpu().unsqueeze(-1)
+    for _ in range(N_BO_STEPS):
+        gp = SingleTaskGP(  # Matern-5/2 ARD kernel by default
+            train_x,
+            train_y,
+            input_transform=Normalize(d=dim),
+            outcome_transform=Standardize(m=1),
+        )
+        fit_gpytorch_mll(ExactMarginalLogLikelihood(gp.likelihood, gp))
+        acqf = LogExpectedImprovement(gp, best_f=train_y.max())
+        next_x, _ = optimize_acqf(
+            acqf, bounds=unit_bounds, q=1, num_restarts=16, raw_samples=512
+        )
+        next_y = evaluate(next_x.to(DEVICE).float()).double().cpu().unsqueeze(-1)
+        train_x = torch.cat([train_x, next_x])
+        train_y = torch.cat([train_y, next_y])
+    return train_y.squeeze(-1).float().to(DEVICE)
+
+
+def run_random(init_x: torch.Tensor, init_y: torch.Tensor) -> torch.Tensor:
+    extra = torch.rand(N_BO_STEPS, init_x.shape[1], device=DEVICE)
+    return torch.cat([init_y, evaluate(extra)])
 
 
 def gap_to_optimum(y: torch.Tensor) -> np.ndarray:
@@ -163,73 +187,76 @@ def gap_to_optimum(y: torch.Tensor) -> np.ndarray:
     return np.maximum(objective.optimal_value - best, GAP_FLOOR)
 
 
-bo_gaps, random_gaps = [], []
+RUNNERS = {
+    "TabPFN-EI": lambda x, y, seed: run_tabpfn(x, y, seed),
+    "GP-LogEI (BoTorch)": lambda x, y, seed: run_gp_logei(x, y),
+    "Random search": lambda x, y, seed: run_random(x, y),
+}
+gaps = {name: [] for name in RUNNERS}
 
 for seed in range(N_SEEDS):
-    # One shared init per repeat: both methods see the same starting evaluations.
-    torch.manual_seed(seed)
-    init_x = torch.rand(N_INIT, objective.dim, device=DEVICE)
+    # One shared scrambled-Sobol init per repeat: every method sees the same start.
+    sobol = torch.quasirandom.SobolEngine(objective.dim, scramble=True, seed=seed)
+    init_x = sobol.draw(N_INIT).to(DEVICE)
     init_y = evaluate(init_x)
 
-    torch.manual_seed(1000 + seed)
-    bo_y = run_bo(init_x, init_y, seed)
+    for name, runner in RUNNERS.items():
+        torch.manual_seed(1000 + seed)
+        gaps[name].append(gap_to_optimum(runner(init_x, init_y, seed)))
 
-    torch.manual_seed(1000 + seed)
-    random_y = torch.cat([init_y, evaluate(torch.rand(N_BO_STEPS, objective.dim, device=DEVICE))])
-
-    bo_gaps.append(gap_to_optimum(bo_y))
-    random_gaps.append(gap_to_optimum(random_y))
     print(
-        f"repeat {seed}: TabPFN gap {bo_gaps[-1][-1]:9.4g} | "
-        f"random search gap {random_gaps[-1][-1]:9.4g}"
+        f"repeat {seed}: "
+        + " | ".join(f"{name} gap {gaps[name][-1][-1]:9.4g}" for name in RUNNERS)
     )
 
-bo_gap = np.array(bo_gaps)          # (N_SEEDS, N_INIT + N_BO_STEPS)
-random_gap = np.array(random_gaps)
+gaps = {name: np.array(runs) for name, runs in gaps.items()}  # (N_SEEDS, N_INIT + N_BO_STEPS)
 ```
 
 ```console
-repeat 0: TabPFN gap       115 | random search gap      9698
-repeat 1: TabPFN gap     124.9 | random search gap      1806
-repeat 2: TabPFN gap       990 | random search gap      2376
-repeat 3: TabPFN gap      1262 | random search gap      6125
-repeat 4: TabPFN gap     564.6 | random search gap 1.397e+04
+repeat 0: TabPFN-EI gap     85.43 | GP-LogEI (BoTorch) gap     170.1 | Random search gap      6576
+repeat 1: TabPFN-EI gap     136.2 | GP-LogEI (BoTorch) gap     876.4 | Random search gap      3497
+repeat 2: TabPFN-EI gap     228.4 | GP-LogEI (BoTorch) gap     333.8 | Random search gap      2376
+repeat 3: TabPFN-EI gap     922.9 | GP-LogEI (BoTorch) gap     354.8 | Random search gap      1119
+repeat 4: TabPFN-EI gap      1062 | GP-LogEI (BoTorch) gap     45.13 | Random search gap      3824
 ```
 
-## Compare Against Random Search
+## Compare the Three Methods
 
 *Same objective, same budget, same starting points — only the choice of the next point differs.*
 
 Rosenbrock values span several orders of magnitude, so we report the **gap to the optimum** (`optimum - best so far`) rather than the raw objective. Lower is better.
 
 ```python
-for name, gaps in [("TabPFN", bo_gap), ("Random search", random_gap)]:
-    final = gaps[:, -1]
+for name, runs in gaps.items():
+    final = runs[:, -1]
     print(
-        f"{name:<14} final gap over {N_SEEDS} repeats: "
+        f"{name:<20} final gap over {N_SEEDS} repeats: "
         f"mean {final.mean():9.4g} | median {np.median(final):9.4g} | best {final.min():9.4g}"
     )
 ```
 
 ```console
-TabPFN         final gap over 5 repeats: mean     611.2 | median     564.6 | best       115
-Random search  final gap over 5 repeats: mean      6795 | median      6125 | best      1806
+TabPFN-EI            final gap over 5 repeats: mean       487 | median     228.4 | best     85.43
+GP-LogEI (BoTorch)   final gap over 5 repeats: mean     356.1 | median     333.8 | best     45.13
+Random search        final gap over 5 repeats: mean      3478 | median      3497 | best      1119
 ```
 
 ```python
-evals = np.arange(1, bo_gap.shape[1] + 1)
+evals = np.arange(1, N_INIT + N_BO_STEPS + 1)
 
 fig, ax = plt.subplots(figsize=(7.2, 4.2), facecolor="#fcfcfb")
 ax.set_facecolor("#fcfcfb")
 ax.set_yscale("log")
 
 # Mean over repeats, band spans min-max across them.
-for curves, label, color in [
-    (bo_gap, "TabPFN with Bayesian Optimization", "#2a78d6"),
-    (random_gap, "Random search", "#1baf7a"),
+for name, color in [
+    ("TabPFN-EI", "#2a78d6"),
+    ("GP-LogEI (BoTorch)", "#eb6834"),
+    ("Random search", "#1baf7a"),
 ]:
-    ax.fill_between(evals, curves.min(0), curves.max(0), color=color, alpha=0.15, lw=0)
-    ax.plot(evals, curves.mean(0), color=color, lw=2, label=label)
+    runs = gaps[name]
+    ax.fill_between(evals, runs.min(0), runs.max(0), color=color, alpha=0.15, lw=0)
+    ax.plot(evals, runs.mean(0), color=color, lw=2, label=name)
 ax.axvline(N_INIT, color="#898781", lw=1, ls=(0, (2, 3)))
 
 ax.set_title("Rosenbrock-4", fontsize=11, color="#0b0b0b", loc="left", fontweight="bold", pad=8)
@@ -247,7 +274,7 @@ ax.legend(frameon=False, fontsize=9.5, labelcolor="#0b0b0b")
 
 fig.suptitle(
     f"Best-so-far gap to optimum — mean over {N_SEEDS} repeats, bands are min-max"
-    "   (dotted line: end of shared random init)",
+    "   (dotted line: end of shared Sobol init)",
     fontsize=11,
     color="#0b0b0b",
     x=0.02,
@@ -258,10 +285,11 @@ fig.tight_layout()
 plt.show()
 ```
 
-![Compare Against Random Search](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/bayesian_optimization/plot-01.png)
+![Compare the Three Methods](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/bayesian_optimization/plot-01.png)
 
 ## Takeaways
 
-- `tabpfn-extensions` already provides the Bayesian Optimization loop primitive: `propose_next_point()`
-- On Rosenbrock-4, TabPFN with Bayesian Optimization should close the gap to the optimum faster than random search under the same evaluation budget.
+- `tabpfn-extensions` provides the Bayesian optimization loop primitive, `propose_next_point()`, and it works with a plain `TabPFNRegressor`: exact EI on TabPFN's predicted distribution, maximized by a gradient-free sampled optimizer.
+- On Rosenbrock-4 with this small budget, TabPFN-EI ends well ahead of random search on every repeat and in the same range as BoTorch's GP with LogEI: ahead on three of the five repeats, behind on two, with a lower median and a higher mean. The starting design matters a lot at 35 evaluations.
+- Where TabPFN pulls clearly ahead of the GP in our larger benchmark is on multimodal functions with steep valleys (Ackley, Michalewicz) and at larger budgets, once its context has grown past a few dozen points. Use more evaluations and more repeats for a clean comparison on your own problem.
 - For more background, start with the upstream [example](https://github.com/PriorLabs/tabpfn-extensions/blob/main/examples/bayesian_optimization/bayesian_optimization.py) and the [`tabpfn-extensions` repo](https://github.com/PriorLabs/tabpfn-extensions).
