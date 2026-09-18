@@ -40,7 +40,7 @@ Real-world tables aren't strictly confined to just numbers and categories. Every
 
 This cookbook shows the simplest bridge: `TabPFNWithImages` from `tabpfn-extensions`. You keep your dataset as it is, tell the wrapper which column holds images, and it turns each picture into a handful of numeric features before TabPFN sees it.
 
-The motivation comes from the [MulTaBench paper](https://arxiv.org/abs/2605.10616), which curates 40 datasets where combining tabular fields with an image or a text provably beats either modality alone. We use one of its image tasks, CheXpert: decide whether a chest X-ray shows cardiomegaly, an enlarged heart, from the scan together with the patient's sex and age, the view of the scan and the other radiology labels attached to the study. The full MulTaBench task has around 45,000 studies; we use the 5,000-row subsample published on Kaggle, so the notebook stays quick.
+The motivation comes from the [MulTaBench paper](https://arxiv.org/abs/2605.10616), which curates 40 datasets where combining tabular fields with an image or a text provably beats either modality alone. We use one of its image tasks, CheXpert: decide whether a chest X-ray shows cardiomegaly, an enlarged heart, from the scan together with the patient's sex and age, the view of the scan and the other radiology labels attached to the study. The full MulTaBench task has around 45000 studies; we use the 5000-row subsample published on Kaggle, so the notebook stays quick.
 
 ## Setup
 
@@ -48,7 +48,7 @@ The image extension for TabPFN ships in `tabpfn-extensions[image]`.
 
 Two things need a one-time acceptance. The image encoder's weights, DINOv3, are gated on the Hugging Face Hub: accept the license on the [model page](https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m), then run `hf auth login` in a terminal or set the `HF_TOKEN` environment variable. The local `tabpfn` package also asks you to accept its license the first time it downloads model weights; in a notebook, set `TABPFN_TOKEN` to an API key from the [TabPFN platform](https://platform.priorlabs.ai/account/api-keys).
 
-A GPU is recommended for the full subsample: embedding 5,000 X-rays and fitting TabPFN on 2,250 rows is a few minutes on a T4 and much longer on a CPU. Without one, the notebook runs on a 300-row sample so every cell finishes quickly. Set `N_ROWS = None` to use everything.
+A GPU is recommended for the full subsample: embedding 5000 X-rays and fitting TabPFN on 3750 rows is a few minutes on a T4 and much longer on a CPU. Without one, the notebook runs on a 300-row sample so every cell finishes quickly. Set `N_ROWS = None` to use everything.
 
 ```python
 %pip install -q "tabpfn-extensions[image] @ git+https://github.com/PriorLabs/tabpfn-extensions" kagglehub matplotlib
