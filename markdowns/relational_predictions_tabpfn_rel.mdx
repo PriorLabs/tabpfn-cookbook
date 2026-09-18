@@ -81,15 +81,16 @@ a warning, but it does not expose database rows written after `test_timestamp`.
 
 ## Setup
 
-RelArena—the package that ships TabPFN-Rel—is available as an alpha release
-on PyPI. The cell below installs it directly from the standard PyPI index.
-No GitHub token or local checkout is required.
+TabPFN-Rel is available as a standalone package on PyPI. It includes the
+Relational Predictive Interface (RPI) through its `relarena-core` dependency;
+the `relarena` benchmark package is only needed for the baseline comparison below.
+Use Python 3.11 or 3.12.
 
-The `tabpfn-rel-api` extra is the no-GPU stack: featurization runs locally,
-while model fitting and prediction use the hosted TabPFN API.
+The `api` extra runs featurization locally and uses the hosted TabPFN API for
+model fitting and prediction. No local GPU is needed.
 
 ```python
-!pip install -q "relarena[tabpfn-rel-api]"
+!pip install -q "tabpfn-rel[api]==0.0.1"
 !pip install -q kagglehub
 
 import importlib.metadata
@@ -97,12 +98,15 @@ import importlib.util
 import os
 import sys
 
-IN_COLAB = importlib.util.find_spec("google.colab") is not None
+IN_COLAB = (
+    importlib.util.find_spec("google") is not None
+    and importlib.util.find_spec("google.colab") is not None
+)
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 print(
     f"Python {sys.version.split()[0]}, "
-    f"relarena {importlib.metadata.version('relarena')}"
+    f"tabpfn-rel {importlib.metadata.version('tabpfn-rel')}"
 )
 
 if IN_COLAB and "pandas" in sys.modules:
@@ -380,7 +384,7 @@ it is worth a look before featurizing anything — if it is wrong, nothing downs
 will save it.
 
 ```python
-from relarena.userdb import PredictiveQuery, PredictiveQuerySpec
+from tabpfn_rel import PredictiveQuery, PredictiveQuerySpec
 
 spec = PredictiveQuerySpec.from_yaml(str(task_path), data_dir=str(DATA_DIR))
 pq = PredictiveQuery(spec)
@@ -468,7 +472,7 @@ relational features it needs for training.
 import time
 from pathlib import Path
 
-from relarena.userdb import PredictiveQuery
+from tabpfn_rel import PredictiveQuery
 
 CACHE_DIR = Path("./relarena-cache")
 pq = PredictiveQuery(spec, data_version="olist-kaggle-v1")
@@ -551,7 +555,17 @@ two learning-free baselines on the same sellers.
 `preds` and the fitted TabPFN-Rel query `pq` already exist from the previous
 section.
 
+The two baselines are supplied by `relarena`. The next cell installs that
+package and calls `discover_models()` to register its models in this running
+notebook. The earlier TabPFN-Rel sections do not require it.
+
 ```python
+!pip install -q "relarena==0.1.0"
+
+from relarena_core import discover_models
+
+discover_models()
+
 # Compute the labels for the historical test window. By default, RelArena
 # verifies coverage using the latest timestamp present in the database.
 test_labels = pq.compute_test_labels()
@@ -606,11 +620,14 @@ test_scores = pd.Series(
     name="Test ROC-AUC",
 ).sort_values(ascending=False)
 
-test_scores.to_frame().style.format("{:.3f}")
+test_scores.to_frame().round(3)
 ```
 
 ```console
-<pandas.io.formats.style.Styler at 0x78de1fde4d10>
+                  Test ROC-AUC
+TabPFN-Rel               0.772
+Dummy per entity         0.688
+Dummy                    0.500
 ```
 
 We observe that TabPFN-Rel improves significantly over the baseline. Depending on the dataset, tuning (e.g. `n_trials=3`) can give another nice boost.
