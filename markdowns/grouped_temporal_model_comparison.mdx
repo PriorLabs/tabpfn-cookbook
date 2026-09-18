@@ -1,6 +1,6 @@
 ---
 title: 'Grouped and temporal data: TabPFN 3 vs 3.5 vs XGBoost'
-description: Compare three classifiers on unseen mice and future vehicle purchases
+description: Compare three models on unseen mice and future fraudulent transactions
   with leakage-aware evaluation splits.
 cookbookTags:
 - classification
@@ -31,14 +31,15 @@ colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/bl
 {/* cookbook-colab:end process_markdown.py */}
 </div>
 {/* cookbook-meta:end process_markdown.py */}
-Will a classifier work on a new subject or a later period? A random row split
-can give an optimistic answer when observations share a subject or a timestamp.
+Can protein measurements identify an unseen mouse’s experimental class, and can
+transaction characteristics identify fraud in a future month? Observations from
+the same subject or nearby times can make random row splits overly optimistic.
 This recipe compares **TabPFN 3, TabPFN 3.5, and XGBoost** in two settings:
 
 | Example | Prediction | Evaluation |
 | --- | --- | --- |
 | Mice protein expression | Eight experimental classes from protein measurements | Hold out entire mice |
-| Don't Get Kicked! | Whether an auction vehicle is a bad purchase | Train on the past, predict a later purchase window |
+| IEEE-CIS fraud detection | Whether a transaction is labeled fraudulent | Train on earlier months, leave a one-month gap, predict the next month |
 
 Both examples use three published Beyond Arena splits. All models see the same
 training and test rows. Start with standard inference, then compare both
@@ -51,7 +52,7 @@ runs on CPU. Authenticate with your usual TabPFN
 client setup before running the comparison.
 
 ```python
-%pip install -q --upgrade tabpfn-client==0.6.0 pandas==2.3.3 numpy==2.5.3 scikit-learn==1.9.0 xgboost==3.4.1 matplotlib==3.11.2 pyarrow==25.0.1 huggingface-hub==1.31.0
+%pip install -q --upgrade tabpfn-client pandas numpy scikit-learn xgboost matplotlib pyarrow huggingface-hub
 ```
 
 ```python
@@ -64,7 +65,7 @@ import numpy as np
 import pandas as pd
 from huggingface_hub import hf_hub_download
 from IPython.display import display
-from sklearn.metrics import accuracy_score, log_loss, roc_auc_score
+from sklearn.metrics import log_loss, average_precision_score
 from sklearn.preprocessing import LabelEncoder
 from tabpfn_client import TabPFNClassifier
 from tabpfn_client.api_models import ModelVersion
@@ -85,12 +86,22 @@ The mice task is `1273313252` (`mice_protein_trisomy_discriminant`), derived fro
 The curation removes the three columns that directly define the target and
 reduces `MouseID` to the actual animal identifier.
 
-The temporal task is `3092669565` (`kick`), from
-[Don't Get Kicked!](https://www.kaggle.com/competitions/DontGetKicked/overview).
-The collection records it as public domain and removes the arbitrary row ID.
+The temporal example is `ieee_fraud_detection`, from the
+[IEEE-CIS Fraud Detection competition](https://www.kaggle.com/competitions/ieee-fraud-detection/overview).
+Beyond Arena joins transaction and identity features, normalizes event-delay
+features, and derives `Transaction_date` from the transaction time. Its metadata
+permits non-commercial use, including academic research.
+
+The target is `isFraud`: 1 denotes fraud. About 3.5% of the 590,540 transactions
+are positive. Labels reflect reported chargebacks and subsequent transactions
+linked to known fraudulent accounts, so they are not independent adjudications
+of every transaction. We retain the curated features except the row identifier
+`TransactionID`. The timestamp guides splitting and Thinking validation.
+The split measures future transactions, which can include returning customers;
+it does not measure generalization to entirely unseen accounts.
 
 ```python
-def load_task(name, version):
+def load_task(name, version, sample_rows=None):
     def download(filename):
         return hf_hub_download(
             "TabArena/BeyondArena", f"{name}/{version}/{filename}",
@@ -100,36 +111,52 @@ def load_task(name, version):
     splits = json.loads(Path(download(
         "experiment_metadata.predictive-ml-splits-mold-v1.json"
     )).read_text())["splits"]
+    if sample_rows is not None:
+        selected = np.sort(np.random.default_rng(42).choice(
+            len(frame), size=min(sample_rows, len(frame)), replace=False
+        ))
+        positions = pd.Series(np.arange(len(selected)), index=selected)
+        for folds in splits.values():
+            for fold, split in folds.items():
+                folds[fold] = [positions.reindex(rows).dropna().astype(int).tolist()
+                               for rows in split]
+        frame = frame.iloc[selected].reset_index(drop=True)
     return frame, splits
 
 mice, mice_splits = load_task(
     "mice_protein_trisomy_discriminant", "019d738d-99a8-7850-b911-f244ac4ad485"
 )
-vehicles, vehicle_splits = load_task("kick", "019d744f-147d-721e-affc-94b58645c0ad")
+fraud, fraud_splits = load_task(
+    "ieee_fraud_detection", "019db516-2f8e-7e50-a8c4-f1c57754f52c", sample_rows=100_000
+)
+fraud = fraud.drop(columns=["TransactionID"])
 print(f"Mice: {len(mice):,} measurements from {mice.MouseID.nunique()} animals")
-print(f"Vehicles: {len(vehicles):,} purchases")
+print(f"IEEE fraud: {len(fraud):,} transactions; {fraud.isFraud.mean():.2%} labeled fraud")
 ```
 
 ```console
 Mice: 1,080 measurements from 72 animals
-Vehicles: 72,983 purchases
+IEEE fraud: 100,000 transactions; 3.53% labeled fraud
 ```
 
 ## Check that the split matches deployment
 
 For mice, use the three folds of the first grouped repetition. An animal's
-measurements must all stay on one side of the split. For vehicles, use the
-three most recent published forecast origins; each test window contains 28
-distinct observed purchase dates (38–40 calendar days in these splits).
-The collection numbers these windows from newest to oldest.
+measurements must all stay on one side of the split. For IEEE, retain the three
+published temporal splits and their original identifiers: split 0 tests May 2018,
+split 1 April, and split 2 March. Each leaves a full month between training and
+testing, matching the collection's planning gap.
 
-The assertions below check group separation, strict chronological order, and
-row disjointness before fitting any model.
+We load a reproducible sample of 100,000 transactions, preserving their original
+split assignments to keep the example manageable. The assertions below check group
+separation, strict chronological order, and row disjointness before fitting.
+We preserve the planning gap in the outer evaluation; `time_col` alone does not
+specify a one-month gap for Thinking's internal validation.
 
 ```python
 splits = {
     "Mice proteins": [mice_splits["0"][str(fold)] for fold in range(3)],
-    "Vehicle purchases": [vehicle_splits[str(fold)]["0"] for fold in range(3)],
+    "IEEE fraud": [fraud_splits[str(fold)]["0"] for fold in range(3)],
 }
 split_rows = []
 for fold, (train, test) in enumerate(splits["Mice proteins"]):
@@ -139,85 +166,88 @@ for fold, (train, test) in enumerate(splits["Mice proteins"]):
                        "Train rows": len(train), "Test rows": len(test),
                        "Train groups": mice.iloc[train].MouseID.nunique(),
                        "Test groups": mice.iloc[test].MouseID.nunique()})
-for fold, (train, test) in enumerate(splits["Vehicle purchases"]):
+for fold, (train, test) in enumerate(splits["IEEE fraud"]):
     assert not set(train) & set(test)
-    assert vehicles.iloc[train].PurchDate.max() < vehicles.iloc[test].PurchDate.min()
-    split_rows.append({"Dataset": "Vehicle purchases", "Split": fold,
+    end = fraud.iloc[train].Transaction_date.max()
+    start = fraud.iloc[test].Transaction_date.min()
+    assert end < start
+    assert start.to_period("M").ordinal - end.to_period("M").ordinal == 2
+    assert set(fraud.iloc[train].isFraud.unique()) == {0, 1}
+    split_rows.append({"Dataset": "IEEE fraud", "Split": fold,
                        "Train rows": len(train), "Test rows": len(test),
-                       "Train through": vehicles.iloc[train].PurchDate.max().date(),
-                       "Test from": vehicles.iloc[test].PurchDate.min().date(),
-                       "Test through": vehicles.iloc[test].PurchDate.max().date()})
+                       "Train through": end, "Test from": start,
+                       "Test through": fraud.iloc[test].Transaction_date.max(),
+                       "Test fraud prevalence": fraud.iloc[test].isFraud.mean()})
 split_summary = pd.DataFrame(split_rows)
 display(split_summary.fillna(""))
 ```
 
 ```console
-             Dataset  Split  Train rows  Test rows Train groups Test groups  \
-0      Mice proteins      0         720        360         48.0        24.0
-1      Mice proteins      1         720        360         48.0        24.0
-2      Mice proteins      2         720        360         48.0        24.0
-3  Vehicle purchases      0       68012       4701
-4  Vehicle purchases      1       62684       5328
-5  Vehicle purchases      2       59029       3655
+         Dataset  Split  Train rows  Test rows Train groups Test groups  \
+0  Mice proteins      0         720        360         48.0        24.0
+1  Mice proteins      1         720        360         48.0        24.0
+2  Mice proteins      2         720        360         48.0        24.0
+3     IEEE fraud      0       70746      15071
+4     IEEE fraud      1       53436      14183
+5     IEEE fraud      2       38965      17310
 
-  Train through   Test from Test through
+        Train through           Test from        Test through  \
+0                 NaT                 NaT                 NaT
+1                 NaT                 NaT                 NaT
+2                 NaT                 NaT                 NaT
+3 2018-03-31 23:59:08 2018-05-01 00:04:57 2018-05-31 23:57:29
+4 2018-02-28 23:59:27 2018-04-01 00:00:50 2018-04-30 23:59:19
+5 2018-01-31 23:57:43 2018-03-01 00:00:23 2018-03-31 23:59:08
+
+  Test fraud prevalence
 0
 1
 2
-3    2010-11-11  2010-11-12   2010-12-21
-4    2010-10-04  2010-10-05   2010-11-11
-5    2010-08-25  2010-08-26   2010-10-04
+3              0.034304
+4              0.035818
+5              0.039688
 ```
 
 ### The temporal evaluation at a glance
 
-The upper panel shows monthly auction volume and the observed bad-buy rate.
-The lower panel shows the actual training history and held-out window for
-each temporal split. A later training set can include earlier test windows,
-matching a model that is periodically retrained as outcomes become available.
-Bad-buy rates are shown retrospectively for context; they are not predictors.
+The upper panel shows the observed weekly fraud rate. The lower panel shows
+the training history, one-month gap, and held-out month for each split.
+These rates are retrospective context, not predictors. The three test months
+remain separate evaluation windows; later training sets can include an earlier
+test month as labels become available.
 
 ```python
 import matplotlib.dates as mdates
 from matplotlib.patches import Patch
 
-monthly = vehicles.assign(IsBadBuy=vehicles.IsBadBuy.astype(int)).set_index(
-    "PurchDate"
-).resample("MS").IsBadBuy.agg(["size", "mean"])
-fig, (ax_volume, ax_split) = plt.subplots(
-    2, 1, figsize=(12, 6.5), sharex=True, gridspec_kw={"height_ratios": [1.3, 1]}
+weekly = fraud.set_index("Transaction_date").isFraud.resample("7D").mean()
+fig, (ax_rate, ax_split) = plt.subplots(
+    2, 1, figsize=(12, 6), sharex=True, gridspec_kw={"height_ratios": [1.2, 1]}
 )
-ax_volume.bar(monthly.index, monthly["size"], width=22, color="#dbe4eb")
-ax_rate = ax_volume.twinx()
-ax_rate.plot(monthly.index, monthly["mean"] * 100, color="#00897b",
-             linewidth=2.3, marker="o", markersize=4)
-ax_volume.set(ylabel="Purchases per month", title="Auction activity and observed purchase risk")
-ax_rate.set_ylabel("Observed bad-buy rate (%)", color="#00897b")
-ax_rate.tick_params(axis="y", colors="#00897b")
-ax_rate.spines["top"].set_visible(False)
-ax_rate.set_ylim(0, monthly["mean"].max() * 125)
-
-for row, fold in enumerate([2, 1, 0]):
-    train, test = splits["Vehicle purchases"][fold]
-    train_start, train_end = vehicles.iloc[train].PurchDate.agg(["min", "max"])
-    test_start, test_end = vehicles.iloc[test].PurchDate.agg(["min", "max"])
-    ax_split.barh(row, (train_end - train_start).days + 1,
-                  left=mdates.date2num(train_start), height=0.5, color="#dbe4eb")
-    ax_split.barh(row, (test_end - test_start).days + 1,
-                  left=mdates.date2num(test_start), height=0.5, color="#00897b")
-    ax_split.annotate(f"{len(test):,} test rows", (mdates.date2num(test_end), row),
+ax_rate.plot(weekly.index, 100 * weekly, color="#00897b", marker="o", markersize=3)
+ax_rate.set(ylabel="Fraud rate (%)", title="Observed fraud prevalence over time")
+for position, fold in enumerate([2, 1, 0]):
+    train, test = splits["IEEE fraud"][fold]
+    train_start, train_end = fraud.iloc[train].Transaction_date.agg(["min", "max"])
+    test_start, test_end = fraud.iloc[test].Transaction_date.agg(["min", "max"])
+    for start, end, color in [(train_start, train_end, "#dbe4eb"),
+                              (train_end, test_start, "#fff3cd"),
+                              (test_start, test_end, "#00897b")]:
+        ax_split.barh(position, mdates.date2num(end) - mdates.date2num(start),
+                      left=mdates.date2num(start), height=0.5, color=color)
+    ax_split.annotate(f"{len(test):,} test rows", (mdates.date2num(test_end), position),
                       xytext=(7, 0), textcoords="offset points", va="center", fontsize=9)
 ax_split.set(yticks=[0, 1, 2], yticklabels=["Split 2", "Split 1", "Split 0"],
-             xlabel="Purchase date", title="Train on earlier purchases; test on later purchase dates")
+             xlabel="Transaction date", title="Train, leave a one-month gap, predict the next month")
 ax_split.invert_yaxis()
-ax_split.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+ax_split.xaxis.set_major_locator(mdates.MonthLocator())
 ax_split.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
-ax_split.set_xlim(mdates.date2num(vehicles.PurchDate.min()) - 20,
-                  mdates.date2num(vehicles.PurchDate.max()) + 115)
+ax_split.set_xlim(fraud.Transaction_date.min(), fraud.Transaction_date.max() + pd.Timedelta(days=40))
 ax_split.legend(handles=[Patch(color="#dbe4eb", label="Training history"),
-                         Patch(color="#00897b", label="Held-out window")],
-                 loc="lower left", frameon=False, ncol=2, bbox_to_anchor=(0, -0.5))
-for ax in (ax_volume, ax_split):
+                         Patch(color="#fff3cd", label="Planning gap"),
+                         Patch(color="#00897b", label="Held-out month")],
+                 loc="lower left", frameon=False, ncol=3, bbox_to_anchor=(0, -0.5))
+for ax in (ax_rate, ax_split):
     ax.set_axisbelow(True)
     ax.grid(axis="x", color="#edf0f2")
 fig.tight_layout()
@@ -228,20 +258,24 @@ plt.show()
 
 ## Compare the three models
 
-Use the protein measurements as predictors and drop `MouseID`. For vehicles,
-omit purchase date from the standard models. Thinking receives the original
-group/date column below to guide its validation. Preserve missing values and encode
-categorical columns with categories learned from the training rows; unseen
-test categories become missing for every model.
+Use protein measurements as predictors and omit `MouseID`. For fraud, omit
+`Transaction_date` from standard models. Thinking receives the original group
+or time column below to guide validation. Preserve missing values and encode
+categorical columns with levels learned from the training rows; unseen test
+categories become missing for every model.
 
 Both TabPFN versions keep their default estimator count and random state.
-The client already fixes its seed; no seed or ensemble-size search is used. XGBoost uses a fixed CPU
-histogram configuration: 500 trees, depth 4, and learning rate 0.05. There is no
-test-set tuning. This is a fresh cookbook comparison using simple preprocessing,
-not a reproduction of Beyond Arena's feature generation or tuned baselines.
+XGBoost uses a fixed CPU histogram configuration: 500 trees, depth 4, and a
+learning rate of 0.05. There is no test-set tuning or class resampling.
 
-Show multiclass log-loss for mice and ROC AUC for vehicles, matching the
-metric selected for Thinking below.
+Use multiclass log-loss for mice (lower is better) and **average precision** for
+fraud (higher is better), matching the selected Thinking objectives. Average
+precision summarizes precision as recall increases, emphasizing the positive
+fraud class. Read it alongside the test month's fraud prevalence; it does not
+choose an operational alert threshold or quantify financial losses.
+Beyond Arena's task metadata lists ROC-AUC; this cookbook intentionally uses
+average precision for the rare-fraud question. This is a fresh comparison with
+simple preprocessing, not a reproduction of the collection's tuned baselines.
 
 ```python
 def prepare(frame, target, split_column, train, test):
@@ -256,13 +290,13 @@ def prepare(frame, target, split_column, train, test):
             encoder.transform(frame.iloc[test][target]))
 
 def compare(frame, target, split_column, task_splits, name, *,
-            thinking_effort=None, thinking_metric=None, group_col=None, time_col=None):
+            metric="Log-loss", thinking_effort=None, thinking_metric=None, group_col=None, time_col=None):
     rows, predictions = [], {}
     for fold, (train, test) in enumerate(task_splits):
         X_train, X_test, y_train, y_test = prepare(frame, target, split_column, train, test)
         categorical = [X_train.columns.get_loc(c) for c in X_train.select_dtypes("category")]
         if thinking_effort is not None:
-            # Preserve the original identifiers/dates in both frames for Thinking.
+            # Preserve the original identifiers/order values in both frames for Thinking.
             for column in [group_col, time_col]:
                 if column is not None:
                     X_train[column] = frame.iloc[train][column]
@@ -287,18 +321,16 @@ def compare(frame, target, split_column, task_splits, name, *,
             ))
             started = time.perf_counter()
             model.fit(X_train, y_train)
-            probability = model.predict_proba(X_test)
+            prediction = model.predict_proba(X_test)
             seconds = time.perf_counter() - started
-            assert np.isfinite(probability).all()
-            assert np.allclose(probability.sum(axis=1), 1, atol=1e-5)
+            assert np.isfinite(prediction).all()
+            assert np.allclose(prediction.sum(axis=1), 1, atol=1e-5)
             assert np.array_equal(model.classes_, np.arange(len(np.unique(y_train))))
             rows.append({"Dataset": name, "Split": fold, "Model": model_name,
-                         "Log-loss": log_loss(y_test, probability),
-                         "Accuracy": accuracy_score(y_test, probability.argmax(axis=1)),
-                         "ROC AUC": (roc_auc_score(y_test, probability[:, 1])
-                                     if probability.shape[1] == 2 else np.nan),
+                         "Log-loss": log_loss(y_test, prediction) if metric == "Log-loss" else np.nan,
+                         "Average precision": average_precision_score(y_test, prediction[:, 1]) if metric == "Average precision" else np.nan,
                          "Seconds": seconds})
-            predictions[f"{fold}_{model_name}"] = probability
+            predictions[f"{fold}_{model_name}"] = prediction
             predictions[f"{fold}_y_test"] = y_test
             print(f"{name}, split {fold}: {model_name} finished in {seconds:.1f}s", flush=True)
     return pd.DataFrame(rows), predictions
@@ -340,63 +372,61 @@ Mice proteins, split 2: restored XGBoost
 8  Mice proteins      2     XGBoost    1.6562
 ```
 
-### Future vehicle purchases
+### Future fraudulent transactions
 
-Fit on all available purchases before each forecast origin. The earlier
-windows' observations can enter later training sets, as they would in a
-rolling deployment. Each model uses the full training set and the full test
-window; no random row split or subsampling is applied.
+Fit on earlier transactions, leave the prescribed month-long gap, and predict
+the held-out month. Each model uses identical rows and predictors.
 
 ```python
-vehicle_results, vehicle_predictions = compare(
-    vehicles, "IsBadBuy", "PurchDate", splits["Vehicle purchases"], "Vehicle purchases"
+fraud_results, fraud_predictions = compare(
+    fraud, "isFraud", "Transaction_date", splits["IEEE fraud"], "IEEE fraud",
+    metric="Average precision",
 )
-display(vehicle_results[["Dataset", "Split", "Model", "ROC AUC"]].round(4))
+display(fraud_results[["Dataset", "Split", "Model", "Average precision"]].round(4))
 ```
 
 ```console
-Vehicle purchases, split 0: restored TabPFN 3
-Vehicle purchases, split 0: restored TabPFN 3.5
-Vehicle purchases, split 0: restored XGBoost
-Vehicle purchases, split 1: restored TabPFN 3
-Vehicle purchases, split 1: restored TabPFN 3.5
-Vehicle purchases, split 1: restored XGBoost
-Vehicle purchases, split 2: restored TabPFN 3
-Vehicle purchases, split 2: restored TabPFN 3.5
-Vehicle purchases, split 2: restored XGBoost
-             Dataset  Split       Model  ROC AUC
-0  Vehicle purchases      0    TabPFN 3   0.8375
-1  Vehicle purchases      0  TabPFN 3.5   0.8438
-2  Vehicle purchases      0     XGBoost   0.7953
-3  Vehicle purchases      1    TabPFN 3   0.7872
-4  Vehicle purchases      1  TabPFN 3.5   0.7962
-5  Vehicle purchases      1     XGBoost   0.7268
-6  Vehicle purchases      2    TabPFN 3   0.7680
-7  Vehicle purchases      2  TabPFN 3.5   0.7812
-8  Vehicle purchases      2     XGBoost   0.7261
+IEEE fraud, split 0: restored TabPFN 3
+IEEE fraud, split 0: restored TabPFN 3.5
+IEEE fraud, split 0: restored XGBoost
+IEEE fraud, split 1: restored TabPFN 3
+IEEE fraud, split 1: restored TabPFN 3.5
+IEEE fraud, split 1: restored XGBoost
+IEEE fraud, split 2: restored TabPFN 3
+IEEE fraud, split 2: restored TabPFN 3.5
+IEEE fraud, split 2: restored XGBoost
+      Dataset  Split       Model  Average precision
+0  IEEE fraud      0    TabPFN 3             0.4826
+1  IEEE fraud      0  TabPFN 3.5             0.5718
+2  IEEE fraud      0     XGBoost             0.4618
+3  IEEE fraud      1    TabPFN 3             0.4478
+4  IEEE fraud      1  TabPFN 3.5             0.5369
+5  IEEE fraud      1     XGBoost             0.4347
+6  IEEE fraud      2    TabPFN 3             0.5031
+7  IEEE fraud      2  TabPFN 3.5             0.5490
+8  IEEE fraud      2     XGBoost             0.4800
 ```
 
 ## Performance on grouped and temporal data
 
-Bars show the mean across the three splits. Dots show the individual split
-scores, making variation across mice folds and time windows visible. Lower
-log-loss is better; higher ROC AUC is better. When scores are close, the chart
-uses a clearly labeled zoomed axis. These dots are descriptive, not confidence
-intervals.
+Bars show the mean across three splits. Dots show individual scores, making
+variation across mice folds and test months visible. Lower log-loss is better;
+higher average precision is better. When scores are close, the chart uses a
+clearly labeled zoomed axis. Dots are descriptive, not confidence intervals.
 
 ```python
-all_results = pd.concat([mice_results, vehicle_results], ignore_index=True)
+all_results = pd.concat([mice_results, fraud_results], ignore_index=True)
 summary = all_results.groupby(["Dataset", "Model"], sort=False)[
-    ["Log-loss", "Accuracy", "ROC AUC", "Seconds"]
+    ["Log-loss", "Average precision", "Seconds"]
 ].mean()
-for dataset, metric in [("Mice proteins", "Log-loss"), ("Vehicle purchases", "ROC AUC")]:
+for dataset, metric in [("Mice proteins", "Log-loss"), ("IEEE fraud", "Average precision")]:
     print(f"{dataset}: {metric}")
     display(summary.loc[dataset, [metric]].round(4))
 
 fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
 for ax, (dataset, metric, direction) in zip(axes, [
     ("Mice proteins", "Log-loss", "lower"),
-    ("Vehicle purchases", "ROC AUC", "higher"),
+    ("IEEE fraud", "Average precision", "higher"),
 ]):
     scores = all_results[all_results.Dataset == dataset].pivot(
         index="Model", columns="Split", values=metric
@@ -424,12 +454,12 @@ Model
 TabPFN 3      1.1280
 TabPFN 3.5    0.7563
 XGBoost       1.9231
-Vehicle purchases: ROC AUC
-            ROC AUC
+IEEE fraud: Average precision
+            Average precision
 Model
-TabPFN 3     0.7976
-TabPFN 3.5   0.8071
-XGBoost      0.7494
+TabPFN 3               0.4779
+TabPFN 3.5             0.5526
+XGBoost                0.4588
 ```
 
 ![Performance on grouped and temporal data](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/grouped_temporal_model_comparison/plot-02.png)
@@ -437,29 +467,27 @@ XGBoost      0.7494
 ## Try high-effort Thinking
 
 [Thinking mode](https://github.com/PriorLabs/tabpfn-client#thinking-mode) spends
-more computation during `fit()` searching model configurations; prediction
-still uses `predict_proba()`. Set `thinking_effort="high"` and choose the metric
-before fitting: `log_loss` for the eight-class mice task, `roc_auc` for vehicle
-risk ranking. The helper above forwards these settings to
-`TabPFNClassifier.create_default_for_version()` for both versions.
+more computation during `fit()` searching model configurations. Set
+`thinking_effort="high"` and choose the objective before fitting: `log_loss`
+for mice and `average_precision` for fraud. Both tasks use `predict_proba()`.
 
-Run the same three splits with the same training rows and preprocessing.
-Only training data is passed to `fit()`; held-out labels are used for scoring.
-Pass `group_col="MouseID"` for mice so Thinking keeps each animal together
-in its internal validation, and `time_col="PurchDate"` for vehicles so it
-validates on contiguous time blocks. These columns must remain in the
-DataFrames passed to both `fit()` and `predict_proba()`; the helper adds back
-the original identifiers and dates for Thinking. Standard models omit them.
-The outer held-out groups and future windows remain the final evaluation.
+Run the same splits with the same training rows and preprocessing. Only
+training labels are passed to `fit()`; held-out labels are used for scoring.
+Pass `group_col="MouseID"` for mice to keep animals together in internal
+validation, and `time_col="Transaction_date"` for fraud to use contiguous
+time blocks. Preserve those original columns in both training and test frames
+for Thinking. Standard models omit them. The outer evaluation retains the
+published month-long planning gap independently of Thinking's validation.
 
 ```python
 mice_thinking, mice_thinking_predictions = compare(
     mice, "class", "MouseID", splits["Mice proteins"], "Mice proteins",
     thinking_effort="high", thinking_metric="log_loss", group_col="MouseID",
 )
-vehicle_thinking, vehicle_thinking_predictions = compare(
-    vehicles, "IsBadBuy", "PurchDate", splits["Vehicle purchases"], "Vehicle purchases",
-    thinking_effort="high", thinking_metric="roc_auc", time_col="PurchDate",
+fraud_thinking, fraud_thinking_predictions = compare(
+    fraud, "isFraud", "Transaction_date", splits["IEEE fraud"], "IEEE fraud",
+    metric="Average precision", thinking_effort="high",
+    thinking_metric="average_precision", time_col="Transaction_date",
 )
 ```
 
@@ -470,12 +498,12 @@ Mice proteins, split 1: restored TabPFN 3 Thinking (high)
 Mice proteins, split 1: restored TabPFN 3.5 Thinking (high)
 Mice proteins, split 2: restored TabPFN 3 Thinking (high)
 Mice proteins, split 2: restored TabPFN 3.5 Thinking (high)
-Vehicle purchases, split 0: restored TabPFN 3 Thinking (high)
-Vehicle purchases, split 0: restored TabPFN 3.5 Thinking (high)
-Vehicle purchases, split 1: restored TabPFN 3 Thinking (high)
-Vehicle purchases, split 1: restored TabPFN 3.5 Thinking (high)
-Vehicle purchases, split 2: restored TabPFN 3 Thinking (high)
-Vehicle purchases, split 2: restored TabPFN 3.5 Thinking (high)
+IEEE fraud, split 0: restored TabPFN 3 Thinking (high)
+IEEE fraud, split 0: restored TabPFN 3.5 Thinking (high)
+IEEE fraud, split 1: restored TabPFN 3 Thinking (high)
+IEEE fraud, split 1: restored TabPFN 3.5 Thinking (high)
+IEEE fraud, split 2: restored TabPFN 3 Thinking (high)
+IEEE fraud, split 2: restored TabPFN 3.5 Thinking (high)
 ```
 
 ### Does Thinking improve held-out performance?
@@ -486,15 +514,15 @@ Each table shows only that task's selected metric. XGBoost remains the fixed
 CPU baseline.
 
 ```python
-all_results = pd.concat([all_results, mice_thinking, vehicle_thinking], ignore_index=True)
+all_results = pd.concat([all_results, mice_thinking, fraud_thinking], ignore_index=True)
 summary = all_results.groupby(["Dataset", "Model"], sort=False)[
-    ["Log-loss", "Accuracy", "ROC AUC", "Seconds"]
+    ["Log-loss", "Average precision", "Seconds"]
 ].mean()
 model_order = ["TabPFN 3", "TabPFN 3 Thinking (high)",
                "TabPFN 3.5", "TabPFN 3.5 Thinking (high)", "XGBoost"]
 for dataset, metric, direction in [
     ("Mice proteins", "Log-loss", "lower"),
-    ("Vehicle purchases", "ROC AUC", "higher"),
+    ("IEEE fraud", "Average precision", "higher"),
 ]:
     print(f"{dataset}: {metric} ({direction} is better)")
     display(summary.loc[dataset, [metric]].reindex(model_order).round(4))
@@ -528,14 +556,14 @@ TabPFN 3 Thinking (high)      1.0963
 TabPFN 3.5                    0.7563
 TabPFN 3.5 Thinking (high)    0.7339
 XGBoost                       1.9231
-Vehicle purchases: ROC AUC (higher is better)
-                            ROC AUC
+IEEE fraud: Average precision (higher is better)
+                            Average precision
 Model
-TabPFN 3                     0.7976
-TabPFN 3 Thinking (high)     0.7974
-TabPFN 3.5                   0.8071
-TabPFN 3.5 Thinking (high)   0.8026
-XGBoost                      0.7494
+TabPFN 3                               0.4779
+TabPFN 3 Thinking (high)               0.5054
+TabPFN 3.5                             0.5526
+TabPFN 3.5 Thinking (high)             0.5410
+XGBoost                                0.4588
 ```
 
 ![Does Thinking improve held-out performance?](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/grouped_temporal_model_comparison/plot-03.png)
@@ -544,30 +572,24 @@ XGBoost                      0.7494
 
 ## Reading the comparison
 
-With default TabPFN settings, mean mice log-loss is **1.1280** for TabPFN 3
-and **0.7563** for 3.5; mean vehicle ROC AUC is **0.7976** and **0.8071**,
-respectively. XGBoost scores **1.9231** mice log-loss and
-**0.7494** vehicle ROC AUC.
+For Mice proteins, mean log-loss is **1.1280** for TabPFN 3, **0.7563** for TabPFN 3.5, and **1.9231** for XGBoost (lower is better).
 
-For mice, with `group_col="MouseID"`, TabPFN 3 Thinking lowers mean log-loss from **1.1280 to 1.0963**
-(improving 2 of the three splits);
-TabPFN 3.5 Thinking lowers mean log-loss from **0.7563 to 0.7339**
-(improving 3 of the three splits).
+TabPFN 3 Thinking improves mean log-loss from **1.1280 to 1.0963**, improving 2 of the three splits.
 
-For vehicles, with `time_col="PurchDate"`, TabPFN 3 Thinking lowers mean roc auc from **0.7976 to 0.7974**
-(improving 2 of the three splits);
-TabPFN 3.5 Thinking lowers mean roc auc from **0.8071 to 0.8026**
-(improving 1 of the three splits).
+TabPFN 3.5 Thinking improves mean log-loss from **0.7563 to 0.7339**, improving 3 of the three splits.
 
-The group/time columns guide Thinking's internal validation; they do not
-replace the outer held-out evaluation. These three splits describe these
-tasks, not the effect of changing seeds across a broader benchmark.
+For IEEE fraud, mean average precision is **0.4779** for TabPFN 3, **0.5526** for TabPFN 3.5, and **0.4588** for XGBoost (higher is better).
+
+TabPFN 3 Thinking improves mean average precision from **0.4779 to 0.5054**, improving 3 of the three splits.
+
+TabPFN 3.5 Thinking worsens mean average precision from **0.5526 to 0.5410**, improving 1 of the three splits.
 
 Choose a split that matches the next prediction: unseen subjects for grouped
-data, later observations for temporal data. Keep that split fixed across
-models, and inspect the per-split scores alongside their mean.
+data, future months for fraud detection. Keep the split fixed across models
+and inspect individual split scores alongside their mean. Average precision
+is evaluated against the positive `isFraud=1` class.
 
-These two datasets were selected after inspecting earlier Beyond Arena
-results. They are curated examples, not an unbiased benchmark of which model
-wins across all datasets. The values above come from this notebook's fresh
-runs with the same settings for each split.
+The mice example was selected after inspecting earlier Beyond Arena results;
+IEEE fraud was chosen to illustrate temporal fraud detection. These are curated
+examples, not an unbiased benchmark of which model wins across all datasets.
+Results describe these tasks and the fixed baseline configuration.
