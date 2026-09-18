@@ -160,8 +160,9 @@ train 227,845 rows / 394 frauds | test 56,962 rows / 98 frauds
   authors recommend.
 - **ROC AUC** measures how well frauds rank above legitimate transactions. It is the most reported number on
   Kaggle, but on data this imbalanced it saturates near 1 and hides real differences.
-- **Frauds in the top 100**: if an analyst team can review 100 transactions out of the 56,962 in the test set,
-  how many of the 98 frauds are among the 100 highest-scored? This is what a review queue actually sees.
+- **Alerts to catch 90% of frauds**: sort the 56,962 test transactions by score and count how many an analyst
+  team has to review before 90% of the 98 frauds are found. This is the workload behind a recall target,
+  and it is where models that look alike on the first metrics come apart.
 
 Every model records its scores into one `results` list for the final table.
 
@@ -169,19 +170,26 @@ Every model records its scores into one `results` list for the final table.
 results = []
 
 
+def alerts_for_recall(proba, target=0.9):
+    """Number of highest-scored transactions to review before `target` of the frauds are found."""
+    frauds_in_order = y_test.to_numpy()[np.argsort(-proba)]
+    needed = int(np.ceil(target * y_test.sum()))
+    return int(np.argmax(np.cumsum(frauds_in_order) >= needed)) + 1
+
+
 def evaluate(name, proba, notes=""):
-    top_100 = int(y_test.to_numpy()[np.argsort(-proba)[:100]].sum())
+    alerts = alerts_for_recall(proba)
     results.append(
         {
             "Model": name,
             "AUPRC": average_precision_score(y_test, proba),
             "ROC AUC": roc_auc_score(y_test, proba),
-            "Frauds in top 100": top_100,
+            "Alerts for 90% recall": alerts,
             "Notes": notes,
         }
     )
     print(f"{name}: AUPRC {results[-1]['AUPRC']:.4f} | ROC AUC {results[-1]['ROC AUC']:.4f} | "
-          f"{top_100} of {int(y_test.sum())} frauds in the top 100")
+          f"{alerts:,} alerts to catch 90% of frauds")
 ```
 
 ## Authentication
@@ -222,7 +230,7 @@ evaluate("TabPFN 3.5 (client, default)", proba_tabpfn, "hosted API")
 ```
 
 ```console
-TabPFN 3.5 (client, default): AUPRC 0.9014 | ROC AUC 0.9902 | 85 of 98 frauds in the top 100
+TabPFN 3.5 (client, default): AUPRC 0.9014 | ROC AUC 0.9902 | 135 alerts to catch 90% of frauds
 ```
 
 ## Reference models from Kaggle
@@ -280,18 +288,20 @@ evaluate("Random forest (100 trees)", proba_rf, "n_estimators=100")
 ```
 
 ```console
-XGBoost (Kaggle configuration): AUPRC 0.8382 | ROC AUC 0.9719 | 82 of 98 frauds in the top 100
-XGBoost (library defaults): AUPRC 0.7813 | ROC AUC 0.9219 | 79 of 98 frauds in the top 100
-Random forest (100 trees): AUPRC 0.8734 | ROC AUC 0.9630 | 86 of 98 frauds in the top 100
+XGBoost (Kaggle configuration): AUPRC 0.8382 | ROC AUC 0.9719 | 647 alerts to catch 90% of frauds
+XGBoost (library defaults): AUPRC 0.7813 | ROC AUC 0.9219 | 5,389 alerts to catch 90% of frauds
+Random forest (100 trees): AUPRC 0.8734 | ROC AUC 0.9630 | 192 alerts to catch 90% of frauds
 ```
 
 ## Results
 
 *One table, four models, the same 30 columns.*
 
-TabPFN leads on both ranking metrics, and on the top 100 it is level with the random forest (85 versus 86
-frauds) without any threshold tuning. Every ROC AUC sits above 0.92 and the top three are within three points of each other, which is
-exactly why the dataset authors ask for AUPRC: there the spread between the same models is twelve points.
+TabPFN leads on both ranking metrics. Every ROC AUC sits above 0.92 and the top three are within three
+points of each other, which is exactly why the dataset authors ask for AUPRC: there the spread between the
+same models is twelve points. The workload column makes the difference concrete: to catch 90% of the frauds,
+analysts review about 135 alerts with TabPFN, roughly 190 with the random forest, and more than 600 with the
+reference XGBoost, with no threshold tuning for any model.
 
 ```python
 table = pd.DataFrame(results)
@@ -301,11 +311,11 @@ print(table.to_string(index=False))
 ```
 
 ```console
-                         Model  AUPRC ROC AUC  Frauds in top 100                                           Notes
-  TabPFN 3.5 (client, default) 0.9014  0.9902                 85                                      hosted API
-XGBoost (Kaggle configuration) 0.8382  0.9719                 82 max_depth=2, early stopping, best_iteration=110
-    XGBoost (library defaults) 0.7813  0.9219                 79                                 XGBClassifier()
-     Random forest (100 trees) 0.8734  0.9630                 86                                n_estimators=100
+                         Model  AUPRC ROC AUC  Alerts for 90% recall                                           Notes
+  TabPFN 3.5 (client, default) 0.9014  0.9902                    135                                      hosted API
+XGBoost (Kaggle configuration) 0.8382  0.9719                    647 max_depth=2, early stopping, best_iteration=110
+    XGBoost (library defaults) 0.7813  0.9219                   5389                                 XGBClassifier()
+     Random forest (100 trees) 0.8734  0.9630                    192                                n_estimators=100
 ```
 
 ## Precision-recall curves
@@ -397,7 +407,7 @@ XGBoost (library defaults)          0.8025 0.0453          0
 
 - **No imbalance handling needed.** TabPFN sees 394 frauds among 227,845 rows and ranks them well without
   undersampling, SMOTE, or class weights. The default probabilities can be thresholded directly for a review
-  queue.
+  queue, and that queue is the shortest of the four models for the same recall.
 - **No feature engineering, no tuning.** The reference models were configured by experienced Kaggle authors;
   TabPFN was not configured at all and still comes out ahead on AUPRC across the folds.
 - **Fair comparison, real caveats.** All models saw the same 30 columns and a random stratified split. A
