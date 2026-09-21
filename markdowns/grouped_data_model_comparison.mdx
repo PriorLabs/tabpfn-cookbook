@@ -32,13 +32,11 @@ colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/bl
 {/* cookbook-meta:end process_markdown.py */}
 ## What is grouped data?
 
-**Grouped data** has several rows from the same source, such as repeated
-visits from one patient or measurements from one mouse. These rows are
-related: 15 measurements from one mouse are not the same as 15 different mice.
+**Grouped data** is not IID (Independent and Identically Distributed). It has an underlying structure: data groups or clusters. For example, datasets could contain multiple
 
-To test predictions for **new mice**, keep each mouse's measurements together:
-use them all for training or all for testing. Mixing them across both can
-make the model look better than it is at predicting new animals.
+In this example, we will study experimental data from 72 different mice. Each mouse has 15 observations. This makes it grouped data. Two observations of the same mouse are not the same as two observations from different mice.
+
+This also affects the evaluation of Machine Learning models. We want a model that accurately predicts data for unseen groups (here, unseen mice). We then have to test TabPFN on mice groups that were not seen in the training/context set.
 
 ## The problem: predict a mouse's experimental class
 
