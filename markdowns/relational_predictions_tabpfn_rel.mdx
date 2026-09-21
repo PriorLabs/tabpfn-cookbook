@@ -74,10 +74,10 @@ question is asked at 30-day intervals stepping back through history, so one sell
 contributes many training rows. Second, **the splits are cuts in time**, not random
 samples — you pick the two dates where train ends and test begins.
 
-RelArena follows the RelBench protocol for final prediction: `predict()` defaults
-to the task's `test_timestamp`, and the feature database remains frozen at that
-cutoff. Configuring a later `at_timestamp` changes the prediction anchor and emits
-a warning, but it does not expose database rows written after `test_timestamp`.
+RelArena follows the RelBench protocol for final prediction. We explicitly select
+`test_timestamp` in a prediction query. The feature database remains frozen at
+that cutoff. A later query timestamp emits a warning and does not expose database
+rows written after `test_timestamp`.
 
 ## Setup
 
@@ -90,7 +90,7 @@ The `api` extra runs featurization locally and uses the hosted TabPFN API for
 model fitting and prediction. No local GPU is needed.
 
 ```python
-!pip install -q "tabpfn-rel[api]==0.0.1"
+!pip install -q "tabpfn-rel[api]==0.0.3"
 !pip install -q kagglehub
 
 import importlib.metadata
@@ -322,9 +322,9 @@ Wrote assets/relational_predictions_tabpfn_rel/olist_database.yaml
 
 The second YAML is the question. It names the entity you predict over, the target,
 the 30-day window, and the two dates that cut train from validation from test — then
-computes the label in SQL. `test_timestamp` is also the default prediction anchor.
-An optional later `at_timestamp` changes the anchor but does not expose database
-rows beyond `test_timestamp`.
+computes the label in SQL. Prediction entities and the anchor time are supplied
+separately in a `PredictiveQuery`. The feature database remains frozen at
+`test_timestamp`, even when a query requests a later anchor.
 
 That query is the heart of it, and it reads as two windows around each anchor time:
 the `WHERE EXISTS` at the bottom looks **backwards** to keep only sellers who were
@@ -350,7 +350,6 @@ timedelta: 30 days
 num_eval_timestamps: 1
 val_timestamp: '2018-05-15 00:00:00'
 test_timestamp: '2018-06-15 00:00:00'
-entities: all
 
 query: |
   SELECT timestamp, seller_id,
@@ -378,29 +377,28 @@ Wrote assets/relational_predictions_tabpfn_rel/olist_seller_churn.yaml
 
 ## Check the labels before spending compute
 
-Loading the spec validates both files, and constructing a `PredictiveQuery` runs
-your SQL once per split. The table that comes out *is* your supervised dataset, so
-it is worth a look before featurizing anything — if it is wrong, nothing downstream
-will save it.
+Loading the spec validates both files. A `PredictiveContext` holds the database
+and training task. The calls below load each split and display its labels.
+Inspect these labels before running featurization.
 
 ```python
-from tabpfn_rel import PredictiveQuery, PredictiveQuerySpec
+from tabpfn_rel import PredictiveContext, PredictiveQuery, PredictiveQuerySpec, TabPFNRel
 
 spec = PredictiveQuerySpec.from_yaml(str(task_path), data_dir=str(DATA_DIR))
-pq = PredictiveQuery(spec)
+context = PredictiveContext(spec)
 
 print(f"{spec.task.task_type} over `{spec.task.entity_table}` -> `{spec.task.target_col}`")
 print(f"Tables in the graph: {list(spec.database.tables)}\n")
 
 for split in ("train", "val", "test"):
-    df = pq.task.get_table(split, mask_input_cols=False).df
+    df = context.task.get_table(split, mask_input_cols=False).df
     print(
         f"{split:<5} {len(df):>6,} rows  "
         f"{df['timestamp'].nunique():>2} anchor(s)  "
         f"churn rate {df['churn'].mean():.1%}"
     )
 
-pq.task.get_table("train", mask_input_cols=False).df.head()
+context.task.get_table("train", mask_input_cols=False).df.head()
 ```
 
 Two things to notice: 11k training rows out of only ~3k sellers, because each
@@ -413,33 +411,32 @@ them back.
 
 ## Fit and predict
 
-`fit` featurizes and trains; `predict` then scores the task's configured prediction
-anchor. Because this task does not set `at_timestamp`, the anchor defaults to
-`test_timestamp`. The feature database is frozen at that cutoff, so rows from the
-forward 30-day label window are not visible to the model. Later,
-`compute_test_labels()` uses the complete source database only to evaluate the
-historical predictions.
+`TabPFNRel(model="client")` uses hosted inference. Its `fit()` method accepts a
+training context, and `predict()` accepts a query with explicit entities and a
+timestamp. Use `model="local"` with the local package extra for local inference.
+`n_trials=0` fits the default configuration without hyperparameter tuning.
 
-Two things to know. The model is a **string**, not part of the spec, so swapping
-`tabpfn-rel-client` for `constant-global` or `constant-per-entity` runs a different
-model against an identical task. `tabpfn-rel-local` provides the local GPU-backed
-variant when its corresponding package extra is installed. And `n_trials=0` skips
-hyperparameter tuning, which is the right default for a first run against a hosted
-API.
+For this historical evaluation, select sellers with observed test-window labels.
+Only their IDs enter the prediction query; their outcomes are used for evaluation.
+The feature database is frozen at `test_timestamp`, so rows from the forward
+30-day label window are not visible to the model.
 
-Most of the wall-clock time is spent on DFS rather than model inference—expect a
-couple of minutes. Stronger CPUs with more CPU cores can speed up this step
-significantly. If you are interested in caching the features created during this
-step (and speeding up re-runs), see the optional caching example below.
+Featurization runs locally. The optional caching example below reuses these
+features across fits and predictions.
 
 ```python
-pq.fit("tabpfn-rel-client", n_trials=0, seed=0)
-preds = pq.predict()
+model = TabPFNRel(model="client")
+model.fit(context, n_trials=0, seed=0)
+test_labels = context.compute_test_labels()
+query = PredictiveQuery(
+    entities=test_labels["seller_id"].tolist(),
+    at_timestamp="test_timestamp",
+)
+preds = model.predict(query)
 
-prediction_anchor = spec.task.at_timestamp or spec.task.test_timestamp
 print(
     f"\nChurn probabilities for {len(preds):,} sellers, "
-    f"anchored at {prediction_anchor}"
+    f"anchored at {spec.task.test_timestamp}"
 )
 preds.head()
 ```
@@ -472,14 +469,14 @@ relational features it needs for training.
 import time
 from pathlib import Path
 
-from tabpfn_rel import PredictiveQuery
+from tabpfn_rel import PredictiveContext
 
 CACHE_DIR = Path("./relarena-cache")
-pq = PredictiveQuery(spec, data_version="olist-kaggle-v1")
+context = PredictiveContext(spec, data_version="olist-kaggle-v1")
 
 started = time.perf_counter()
-pq.fit(
-    "tabpfn-rel-client",
+model.fit(
+    context,
     n_trials=1,
     seed=0,
     cache_dir=CACHE_DIR,
@@ -489,8 +486,8 @@ fit_seconds = time.perf_counter() - started
 print(f"Initial fit complete!")
 
 started_cached = time.perf_counter()
-pq.fit(
-    "tabpfn-rel-client",
+model.fit(
+    context,
     n_trials=3,
     seed=0,
     cache_dir=CACHE_DIR,
@@ -504,7 +501,8 @@ print(f"Fit Cached: {fit_cached_seconds:.1f} s")
 print(f"Cache directory: {CACHE_DIR.resolve()}")
 ```
 
-Assuming we ran the above cell for the first time, we can see that the second `fit()` is a lot faster even though it runs 3x the tuning than the first cell.
+The second fit can reuse features from the first fit. Its total runtime also
+depends on the configurations selected by the larger tuning budget.
 
 Caching also works for `predict()`, as you can see in the cell below:
 
@@ -514,11 +512,11 @@ Caching also works for `predict()`, as you can see in the cell below:
 import pandas as pd
 
 started = time.perf_counter()
-preds = pq.predict()
+preds = model.predict(query)
 first_seconds = time.perf_counter() - started
 
 started = time.perf_counter()
-preds_cached = pq.predict()
+preds_cached = model.predict(query)
 cached_seconds = time.perf_counter() - started
 
 # The TabPFN API is slightly non-deterministic
@@ -533,7 +531,7 @@ pd.testing.assert_series_equal(
 print(f"First prediction:  {first_seconds:.1f} s")
 print(f"Cached prediction: {cached_seconds:.1f} s")
 print(f"Speedup:           {first_seconds / max(cached_seconds, 1e-9):.1f}×")
-prediction_anchor = spec.task.at_timestamp or spec.task.test_timestamp
+prediction_anchor = spec.task.test_timestamp
 print(
     f"\nChurn probabilities for {len(preds):,} sellers, "
     f"anchored at {prediction_anchor}"
@@ -552,55 +550,49 @@ two learning-free baselines on the same sellers.
 - `constant-per-entity` uses each seller's own history when available and falls
   back to the global rate otherwise.
 
-`preds` and the fitted TabPFN-Rel query `pq` already exist from the previous
-section.
+`preds`, the prediction `query`, and the training `context` already exist from
+the previous section.
 
 The two baselines are supplied by `relarena`. The next cell installs that
 package and calls `discover_models()` to register its models in this running
 notebook. The earlier TabPFN-Rel sections do not require it.
 
 ```python
-!pip install -q "relarena==0.1.0"
+!pip install -q "relarena==0.1.1"
 
 from relarena_core import discover_models
 
 discover_models()
 
-# Compute the labels for the historical test window. By default, RelArena
-# verifies coverage using the latest timestamp present in the database.
-test_labels = pq.compute_test_labels()
+# Both baselines use the same training context and prediction cohort.
+dummy = context.fit("constant-global", n_trials=0, seed=0)
+preds_dummy = dummy.predict(query)
 
-# Fit and predict with the two learning-free baselines. n_trials=0 is sufficient:
-# neither baseline has hyperparameters to tune.
-pq_dummy = PredictiveQuery(
-    spec, data_version="olist-kaggle-v1"
-).fit("constant-global", n_trials=0, seed=0)
-preds_dummy = pq_dummy.predict()
-
-pq_dummy_per_entity = PredictiveQuery(
-    spec, data_version="olist-kaggle-v1"
-).fit("constant-per-entity", n_trials=0, seed=0)
-preds_dummy_per_entity = pq_dummy_per_entity.predict()
+per_entity = context.fit("constant-per-entity", n_trials=0, seed=0)
+preds_dummy_per_entity = per_entity.predict(query)
 
 print(f"Held-out test sellers: {len(test_labels):,}")
 ```
 
-`predict()` scores every seller by default, whereas the churn task evaluates
-only sellers active during the preceding 30 days. The prediction frames are
-therefore larger than `test_labels`. Joining from the labels selects the
-relevant cohort and checks that every held-out seller received a prediction.
+All three models score the sellers selected by the same prediction query.
+The outer join below requires predictions to match the test labels exactly,
+including both seller IDs and timestamps.
 
 ```python
 from sklearn.metrics import roc_auc_score
 
 
-def test_roc_auc(predictions):
+def test_roc_auc(predictions: pd.DataFrame) -> float:
     scored = test_labels.merge(
         predictions,
         on=["timestamp", "seller_id"],
-        how="left",
+        how="outer",
         validate="one_to_one",
+        indicator=True,
     )
+
+    if not scored["_merge"].eq("both").all():
+        raise ValueError("Prediction rows must exactly match test label rows.")
 
     missing = scored["churn_pred"].isna().sum()
     if missing:
@@ -625,7 +617,7 @@ test_scores.to_frame().round(3)
 
 ```console
                   Test ROC-AUC
-TabPFN-Rel               0.772
+TabPFN-Rel               0.750
 Dummy per entity         0.688
 Dummy                    0.500
 ```
