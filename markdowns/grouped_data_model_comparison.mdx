@@ -30,15 +30,41 @@ colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/bl
 {/* cookbook-colab:end process_markdown.py */}
 </div>
 {/* cookbook-meta:end process_markdown.py */}
-Can protein measurements identify an unseen mouse's experimental class?
-Repeated measurements from one animal share biological characteristics, so
-predicting another measurement from a familiar mouse is a different task from
-predicting the class of a new animal. This recipe compares **TabPFN 3,
-TabPFN 3.5, and XGBoost** with entire mice held out of training.
+Can brain protein measurements distinguish genotype, learning conditions,
+and treatment in a mouse model of Down syndrome? The
+[Mice Protein Expression study](https://doi.org/10.24432/C50S3Z) measures
+77 proteins or protein modifications to investigate learning and the effects
+of memantine, a drug studied for its ability to restore learning in these mice.
+Predicting the experimental class of an unseen animal tests whether these
+measurements capture biological differences that generalize across animals.
+
+The experimental labels are already known. The research value is testing
+whether protein profiles distinguish those conditions, supporting further
+work to identify proteins associated with learning and treatment response.
+This recipe compares **TabPFN 3, TabPFN 3.5, and XGBoost** on that prediction
+task, with entire mice held out of training.
 
 All models use the same three published Beyond Arena grouped splits. Start
 with standard inference, then compare both TabPFN versions with high-effort
 Thinking on the same splits.
+
+## The eight experimental classes
+
+The target, `class`, combines three experimental factors: **genotype**
+(control or trisomy), **conditioning** (context-shock or shock-context),
+and **treatment** (saline or memantine). Context-shock (`CS`) stimulates
+associative learning; shock-context (`SC`) is the comparison condition.
+
+| Class label | Genotype | Conditioning | Treatment |
+| --- | --- | --- | --- |
+| `c-CS-s` | Control | Context-shock | Saline |
+| `c-CS-m` | Control | Context-shock | Memantine |
+| `c-SC-s` | Control | Shock-context | Saline |
+| `c-SC-m` | Control | Shock-context | Memantine |
+| `t-CS-s` | Trisomy | Context-shock | Saline |
+| `t-CS-m` | Trisomy | Context-shock | Memantine |
+| `t-SC-s` | Trisomy | Shock-context | Saline |
+| `t-SC-m` | Trisomy | Shock-context | Memantine |
 
 ## What is grouped data?
 
@@ -63,12 +89,12 @@ measurements can still carry similarities specific to the animal.
 
 ## Setup
 
-Install the client and dependencies. TabPFN runs through the API; XGBoost
+Install the pinned client and dependencies. TabPFN runs through the API; XGBoost
 runs on CPU. Authenticate with your usual TabPFN
 client setup before running the comparison.
 
 ```python
-%pip install -q --upgrade tabpfn-client pandas numpy scikit-learn xgboost matplotlib pyarrow huggingface-hub
+%pip install -q --upgrade tabpfn-client==0.6.0 pandas==2.3.3 numpy==2.5.3 scikit-learn==1.9.0 xgboost==3.4.1 matplotlib==3.11.2 pyarrow==25.0.1 huggingface-hub==1.31.0
 ```
 
 ```python
@@ -392,8 +418,3 @@ TabPFN 3 Thinking improves mean log-loss from **1.1280 to 1.0963**, improving
 Keep the split fixed across models and inspect individual fold scores
 alongside their mean. These scores describe predictions for unseen mice;
 the 1,080 measurements should not be treated as 1,080 independent animals.
-
-The mice example was selected after inspecting earlier Beyond Arena results.
-This is a curated example, not an unbiased benchmark of which model wins
-across all datasets. Results describe this task and the fixed baseline
-configuration.
