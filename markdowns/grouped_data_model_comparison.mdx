@@ -30,62 +30,41 @@ colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/bl
 {/* cookbook-colab:end process_markdown.py */}
 </div>
 {/* cookbook-meta:end process_markdown.py */}
-Can brain protein measurements distinguish genotype, learning conditions,
-and treatment in a mouse model of Down syndrome? The
-[Mice Protein Expression study](https://doi.org/10.24432/C50S3Z) measures
-77 proteins or protein modifications to investigate learning and the effects
-of memantine, a drug studied for its ability to restore learning in these mice.
-Predicting the experimental class of an unseen animal tests whether these
-measurements capture biological differences that generalize across animals.
-
-The experimental labels are already known. The research value is testing
-whether protein profiles distinguish those conditions, supporting further
-work to identify proteins associated with learning and treatment response.
-This recipe compares **TabPFN 3, TabPFN 3.5, and XGBoost** on that prediction
-task, with entire mice held out of training.
-
-All models use the same three published Beyond Arena grouped splits. Start
-with standard inference, then compare both TabPFN versions with high-effort
-Thinking on the same splits.
-
-## The eight experimental classes
-
-The target, `class`, combines three experimental factors: **genotype**
-(control or trisomy), **conditioning** (context-shock or shock-context),
-and **treatment** (saline or memantine). Context-shock (`CS`) stimulates
-associative learning; shock-context (`SC`) is the comparison condition.
-
-| Class label | Genotype | Conditioning | Treatment |
-| --- | --- | --- | --- |
-| `c-CS-s` | Control | Context-shock | Saline |
-| `c-CS-m` | Control | Context-shock | Memantine |
-| `c-SC-s` | Control | Shock-context | Saline |
-| `c-SC-m` | Control | Shock-context | Memantine |
-| `t-CS-s` | Trisomy | Context-shock | Saline |
-| `t-CS-m` | Trisomy | Context-shock | Memantine |
-| `t-SC-s` | Trisomy | Shock-context | Saline |
-| `t-SC-m` | Trisomy | Shock-context | Memantine |
-
 ## What is grouped data?
 
-Data is **grouped** when several rows come from the same underlying entity or
-share a source: measurements from one mouse, visits from one patient, or
-products from one manufacturer. Rows within a group can be more similar to
-each other than to rows from other groups, so the row count can overstate how
-many independent examples the dataset contains.
+**Grouped data** has several rows from the same source, such as repeated
+visits from one patient or measurements from one mouse. These rows are
+related: 15 measurements from one mouse are not the same as 15 different mice.
 
-Here, a row is one protein measurement profile and the group is the mouse
-identified by `MouseID`. There are **1,080 rows from 72 mice**, with 15
-measurements per mouse. The target, `class`, is one of eight experimental
-classes. A group identifier is not a class label: multiple mice can belong
-to the same class.
+To test predictions for **new mice**, keep each mouse's measurements together:
+use them all for training or all for testing. Mixing them across both can
+make the model look better than it is at predicting new animals.
 
-A random row split can put measurements from the same mouse in both training
-and test data. The model may then exploit patterns specific to a familiar
-animal, making that score overly optimistic for **unseen mice**. A grouped
-split assigns each mouse, including all its measurements, to just one side.
-Dropping `MouseID` from the predictors is not enough on its own: protein
-measurements can still carry similarities specific to the animal.
+## The problem: predict a mouse's experimental class
+
+The [Mice Protein Expression dataset](https://doi.org/10.24432/C50S3Z) contains
+protein measurements from **72 mice**, with 15 rows per mouse. We predict
+which of eight experimental classes each mouse belongs to. Although these
+labels are already known, predicting them tests whether the proteins reveal
+patterns linked to learning and treatment in a mouse model of Down syndrome.
+
+The classes combine mouse type, a learning task or comparison condition,
+and treatment with saline or the drug memantine. Trisomy mice model Down
+syndrome; `CS` denotes the learning task and `SC` the comparison condition.
+
+| Class label | Mouse type | Condition | Treatment |
+| --- | --- | --- | --- |
+| `c-CS-s` | Control | Learning task | Saline |
+| `c-CS-m` | Control | Learning task | Memantine |
+| `c-SC-s` | Control | Comparison | Saline |
+| `c-SC-m` | Control | Comparison | Memantine |
+| `t-CS-s` | Trisomy | Learning task | Saline |
+| `t-CS-m` | Trisomy | Learning task | Memantine |
+| `t-SC-s` | Trisomy | Comparison | Saline |
+| `t-SC-m` | Trisomy | Comparison | Memantine |
+
+We compare **TabPFN 3, TabPFN 3.5, and XGBoost** on the same held-out mice,
+then try Thinking mode. Each mouse is a group; several mice share a class.
 
 ## Setup
 
