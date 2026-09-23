@@ -45,6 +45,8 @@ protein measurements from **72 mice**, with 15 rows per mouse. We predict
 which of eight experimental classes each mouse belongs to. Although these
 labels are already known, predicting them tests whether the proteins reveal
 patterns linked to learning and treatment in a mouse model of Down syndrome.
+All 15 rows from a mouse share the same target label; keeping them as separate
+examples evaluates how well each protein measurement predicts that label.
 
 The classes combine mouse type, a learning task or comparison condition,
 and treatment with saline or the drug memantine. Trisomy mice model Down
@@ -185,34 +187,47 @@ preprocessing, rather than reproducing the collection's tuned baselines.
 def prepare(frame, target, split_column, train, test):
     X_train = frame.iloc[train].drop(columns=[target, split_column]).copy()
     X_test = frame.iloc[test].drop(columns=[target, split_column]).copy()
+    # Learn category levels from training mice only.
     for column in X_train.select_dtypes(include=["category", "object", "string"]):
         categories = pd.Index(X_train[column].dropna().unique())
         X_train[column] = pd.Categorical(X_train[column], categories=categories)
         X_test[column] = pd.Categorical(X_test[column], categories=categories)
+
     encoder = LabelEncoder().fit(frame.iloc[train][target])
     return (X_train, X_test, encoder.transform(frame.iloc[train][target]),
             encoder.transform(frame.iloc[test][target]))
 
+
 def compare(frame, target, split_column, task_splits, name, *,
             thinking_effort=None, thinking_metric=None, group_col=None):
     rows, predictions = [], {}
+
     for fold, (train, test) in enumerate(task_splits):
         X_train, X_test, y_train, y_test = prepare(frame, target, split_column, train, test)
         categorical = [X_train.columns.get_loc(c) for c in X_train.select_dtypes("category")]
+
         if thinking_effort is not None and group_col is not None:
             # Keep the original mouse identifiers for Thinking's grouped validation.
             X_train[group_col] = frame.iloc[train][group_col]
             X_test[group_col] = frame.iloc[test][group_col]
-        for model_name, version in [("TabPFN 3", ModelVersion.V3),
-                                    ("TabPFN 3.5", ModelVersion.V3_5),
-                                    ("XGBoost", None)]:
+
+        for model_name, version in [
+            ("TabPFN 3", ModelVersion.V3),
+            ("TabPFN 3.5", ModelVersion.V3_5),
+            ("XGBoost", None),
+        ]:
             if thinking_effort is not None and version is None:
                 continue
+
             thinking = {}
             if thinking_effort is not None:
                 model_name += " Thinking (high)"
-                thinking = dict(thinking_effort=thinking_effort, thinking_metric=thinking_metric,
-                                group_col=group_col)
+                thinking = dict(
+                    thinking_effort=thinking_effort,
+                    thinking_metric=thinking_metric,
+                    group_col=group_col,
+                )
+
             model = (XGBClassifier(
                 n_estimators=500, max_depth=4, learning_rate=0.05,
                 tree_method="hist", device="cpu", enable_categorical=True,
@@ -221,19 +236,26 @@ def compare(frame, target, split_column, task_splits, name, *,
                 version,
                 categorical_features_indices=categorical, **thinking,
             ))
+
+            # Score every model on the same held-out mice.
             started = time.perf_counter()
             model.fit(X_train, y_train)
             prediction = model.predict_proba(X_test)
             seconds = time.perf_counter() - started
+
             assert np.isfinite(prediction).all()
             assert np.allclose(prediction.sum(axis=1), 1, atol=1e-5)
             assert np.array_equal(model.classes_, np.arange(len(np.unique(y_train))))
-            rows.append({"Dataset": name, "Split": fold, "Model": model_name,
-                         "Log-loss": log_loss(y_test, prediction),
-                         "Seconds": seconds})
+
+            rows.append({
+                "Dataset": name, "Split": fold, "Model": model_name,
+                "Log-loss": log_loss(y_test, prediction),
+                "Seconds": seconds,
+            })
             predictions[f"{fold}_{model_name}"] = prediction
             predictions[f"{fold}_y_test"] = y_test
             print(f"{name}, split {fold}: {model_name} finished in {seconds:.1f}s", flush=True)
+
     return pd.DataFrame(rows), predictions
 ```
 
@@ -280,8 +302,7 @@ better. Keep the individual fold scores above in view: the held-out mice
 change between folds, so performance varies with which animals are unseen.
 
 ```python
-all_results = mice_results.copy()
-summary = all_results.groupby(["Dataset", "Model"], sort=False)[
+summary = mice_results.groupby(["Dataset", "Model"], sort=False)[
     ["Log-loss", "Seconds"]
 ].mean()
 print("Mice proteins: Log-loss")
@@ -339,7 +360,7 @@ show the three-split mean and dots show individual splits; the dots are
 descriptive, not confidence intervals. XGBoost remains the fixed CPU baseline.
 
 ```python
-all_results = pd.concat([all_results, mice_thinking], ignore_index=True)
+all_results = pd.concat([mice_results, mice_thinking], ignore_index=True)
 summary = all_results.groupby(["Dataset", "Model"], sort=False)[
     ["Log-loss", "Seconds"]
 ].mean()
