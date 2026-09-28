@@ -1,7 +1,7 @@
 ---
 title: 'TabPFN as a tool for Jev: job fraud'
-description: Compare Jev and TabPFN-3.5-Plus on job-posting fraud, then test the benefit
-  of more labeled examples.
+description: Compare Jev's 44-example context with TabPFN Plus using all available
+  job postings, then measure how much training data TabPFN needs.
 icon: table
 cookbookTags:
 - jev
@@ -22,45 +22,37 @@ colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/bl
 {/* cookbook-meta:end process_markdown.py */}
 # TabPFN as a tool for Jev: job fraud
 
-When does Jev need a tool like TabPFN to make grounded decisions? We compare them on job postings that mix text, categories and binary flags. Both start with the same 44 training examples and 300 test postings. Then TabPFN gets 300, 1,000 and 5,000 training rows.
+When does Jev need a tool like TabPFN to make grounded decisions? We compare them on detecting fraudulent job postings that mix text, categories and yes/no flags. First, Jev gets 44 labeled examples. Then TabPFN Plus gets all available training postings. Finally, we check how much less data TabPFN can use while still ranking fraud better.
 
-## A TLDR of what we found
+All results use the same 300 test postings. We compare the probabilities returned by each API directly.
 
-**At 44 examples, Jev flags 35 postings: 8 are fraud and 27 are legitimate.** It misses 7 of the 15 fraud cases. That means 77% of its alerts are false alarms. TabPFN also struggles at this training size: at the same 0.5 threshold, it catches no fraud.
+## 1. Jev: 44 examples in context
 
-More labeled data changes the result. With 5,000 examples and validation-selected calibration and F1 threshold, TabPFN catches 13 of 15 fraud cases with one false alarm. Jev's tuned 44-example result catches 8 with 24 false alarms. This is a comparison of the available training capacity, not an equal-data model advantage.
+### Setup
 
-## Setup
-
-Run the notebook top to bottom. It downloads the dataset and makes fresh predictions with both APIs; no local data or prediction files are needed.
-
-In a fresh Colab runtime, choose **Runtime → Run all** and enter your TabPFN and Jev API keys at the prompts (or set `TABPFN_API_KEY` and `JEV_API_KEY`). Get a TabPFN key at [platform.priorlabs.ai](https://platform.priorlabs.ai).
+Run this notebook top to bottom in Colab. It downloads the data and runs both APIs; no local data or saved predictions are required. Enter your API keys at the prompts, or set `TABPFN_API_KEY` and `JEV_API_KEY`. You need accounts with enough API quota; get a TabPFN key at [platform.priorlabs.ai](https://platform.priorlabs.ai).
 
 ```python
-%pip install -q tabpfn-client==0.5.3 pandas==2.3.3 numpy==2.4.6 scipy==1.16.3 scikit-learn==1.6.1 matplotlib==3.10.9 httpx==0.28.1 "kagglehub[pandas-datasets]==0.3.13"
+%pip install -q tabpfn-client==0.5.3 pandas==2.3.3 numpy==2.4.6 scikit-learn==1.6.1 matplotlib==3.10.9 httpx==0.28.1 "kagglehub[pandas-datasets]==0.3.13"
 ```
 
 ```python
+import json
 import os
 from getpass import getpass
 
-import kagglehub
-from kagglehub import KaggleDatasetAdapter
-
 import httpx
+import kagglehub
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from IPython.display import display
+from IPython.display import Markdown, display
+from kagglehub import KaggleDatasetAdapter
 from sklearn.metrics import (
-    accuracy_score,
     average_precision_score,
     brier_score_loss,
-    f1_score,
     log_loss,
     precision_recall_curve,
-    recall_score,
-    precision_score,
     roc_auc_score,
     roc_curve,
 )
@@ -73,7 +65,6 @@ JEV_URL = "https://api.typesafe.ai/v1/systemone"
 
 tabpfn_key = os.getenv("TABPFN_API_KEY") or os.getenv("TABPFN_TOKEN")
 jev_key = os.getenv("JEV_API_KEY")
-
 set_access_token(tabpfn_key or getpass("TabPFN API key: "))
 jev_key = jev_key or getpass("Jev API key: ")
 
@@ -84,203 +75,18 @@ plt.rcParams.update({
     "axes.spines.right": False,
     "axes.titlecolor": "#101075",
     "axes.titleweight": "bold",
-    "axes.labelcolor": "#1e293b",
+    "axes.labelcolor": "#1E293B",
     "font.size": 10,
 })
 ```
 
-### Reading the results
-
-Accuracy is the fraction of correct decisions; always predicting legitimate already gets 95% here. Precision is the fraction of alerts that are actually fraud. Recall is the fraction of positive cases caught; F1 balances recall with precision (how many flagged cases are actually positive). These use a 0.5 threshold, except in the final section, which selects thresholds using training data.
-
-AUROC and average precision measure how well the model ranks positive cases above negative ones; higher is better. Average precision is especially useful when fraud is rare. **Brier score** is the average squared error of the probabilities; **log loss** penalizes confident mistakes more heavily. Both are better when lower, and neither is an error percentage.
-
-In the calibration plots, points near the diagonal mean predicted risks match observed rates. Five bins, counts and 95% error bars show how much evidence supports each point; 300 test rows give only a rough picture.
-
-```python
-def evaluate(y_true, predictions):
-    rows = []
-
-    for name, probabilities in predictions.items():
-        labels = probabilities >= 0.5
-        rows.append({
-            "Model": name,
-            "Accuracy": accuracy_score(y_true, labels),
-            "Precision": precision_score(y_true, labels, zero_division=0),
-            "Fraud caught": int(np.sum(labels & (np.asarray(y_true) == 1))),
-            "Fraud missed": int(np.sum(~labels & (np.asarray(y_true) == 1))),
-            "False alarms": int(np.sum(labels & (np.asarray(y_true) == 0))),
-            "F1": f1_score(y_true, labels, zero_division=0),
-            "Recall": recall_score(y_true, labels, zero_division=0),
-            "AUROC": roc_auc_score(y_true, probabilities),
-            "Average precision": average_precision_score(y_true, probabilities),
-            "Log loss": log_loss(y_true, probabilities, labels=[0, 1]),
-            "Brier": brier_score_loss(y_true, probabilities),
-        })
-
-    return pd.DataFrame(rows).set_index("Model")
-
-
-def plot_results(y_true, predictions, title):
-    names = list(predictions)
-    scores = evaluate(y_true, predictions)
-    y_true = np.asarray(y_true)
-
-    # Show the operational consequence of each model's 0.5 threshold.
-    fig, axes = plt.subplots(1, 2, figsize=(12, 3.7), layout="constrained")
-    for ax, other, subtitle in [
-        (axes[0], "Fraud missed", "Of the 15 fraudulent postings"),
-        (axes[1], "False alarms", "Of all flagged postings"),
-    ]:
-        caught = scores.loc[names, "Fraud caught"].to_numpy()
-        remainder = scores.loc[names, other].to_numpy()
-        ax.barh(names, caught, color="#101075", label="Fraud caught")
-        ax.barh(
-            names, remainder, left=caught,
-            color="#D5DCE6" if other == "Fraud missed" else "#DAA462", label=other,
-        )
-        for row, (found, rest) in enumerate(zip(caught, remainder)):
-            if found:
-                ax.text(found / 2, row, str(found), ha="center", va="center", color="white")
-            if rest:
-                ax.text(found + rest / 2, row, str(rest), ha="center", va="center")
-        ax.set(title=subtitle, xlabel="Number of postings", xlim=(0, max(caught + remainder) * 1.05))
-        ax.invert_yaxis()
-        ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.40), ncol=2, fontsize=9)
-        ax.set_axisbelow(True)
-        ax.grid(axis="x", color="#EEF0F4")
-    fig.suptitle(title + " · threshold 0.5", color="#101075", fontsize=15, fontweight="bold")
-    plt.show()
-
-    # Label ranking curves with their scores rather than relying on visual distance.
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.4), layout="constrained")
-    for name, probabilities in predictions.items():
-        fpr, tpr, _ = roc_curve(y_true, probabilities)
-        precision, recall, _ = precision_recall_curve(y_true, probabilities)
-        axes[0].plot(
-            fpr, tpr, color=colors[name], linewidth=2.5,
-            label=f"{name} · AUROC {scores.loc[name, 'AUROC']:.3f}",
-        )
-        axes[1].step(
-            recall, precision, where="post", color=colors[name], linewidth=2.5,
-            label=f"{name} · AP {scores.loc[name, 'Average precision']:.3f}",
-        )
-
-    axes[0].plot([0, 1], [0, 1], "--", color="#C4CAD4", label="Random ranking")
-    axes[1].axhline(
-        y_true.mean(), linestyle="--", color="#C4CAD4",
-        label=f"Positive-class prevalence: {y_true.mean():.0%}",
-    )
-    axes[0].set(title="ROC", xlabel="False positive rate", ylabel="True positive rate")
-    axes[1].set(title="Precision–recall", xlabel="Recall", ylabel="Precision")
-    for ax in axes:
-        ax.set_xlim(-0.02, 1.02)
-        ax.set_ylim(-0.02, 1.02)
-        ax.grid(color="#EEF0F4")
-        ax.legend(fontsize=9, loc="lower right" if ax is axes[0] else "lower left")
-    plt.show()
-
-    # Separate calibration panels avoid overlapping lines and expose sparse bins.
-    fig, axes = plt.subplots(
-        2, 2, figsize=(11, 7.4), layout="constrained",
-        gridspec_kw={"height_ratios": [2.4, 1]},
-    )
-    largest_bin = max(np.histogram(p, bins=np.linspace(0, 1, 11))[0].max() for p in predictions.values())
-    for column, (name, probabilities) in enumerate(predictions.items()):
-        probabilities = np.asarray(probabilities)
-        bins = pd.DataFrame({"probability": probabilities, "outcome": y_true})
-        bins["bin"] = pd.cut(bins["probability"], bins=np.linspace(0, 1, 6), include_lowest=True)
-        points = bins.groupby("bin", observed=True).agg(
-            predicted=("probability", "mean"),
-            observed=("outcome", "mean"),
-            count=("outcome", "size"),
-        )
-
-        # Wilson intervals describe uncertainty in each observed event rate.
-        n = points["count"].to_numpy()
-        rate = points["observed"].to_numpy()
-        z = 1.96
-        denominator = 1 + z**2 / n
-        center = (rate + z**2 / (2 * n)) / denominator
-        half_width = z * np.sqrt(rate * (1 - rate) / n + z**2 / (4 * n**2)) / denominator
-        errors = np.maximum(0, [rate - (center - half_width), center + half_width - rate])
-
-        ax = axes[0, column]
-        ax.plot([0, 1], [0, 1], "--", color="#B9C1CE", linewidth=1.5)
-        ax.errorbar(
-            points["predicted"], rate, yerr=errors, fmt="none",
-            color=colors[name], alpha=0.65, capsize=4, linewidth=1.5,
-        )
-        ax.scatter(
-            points["predicted"], rate, s=35 + 4 * n,
-            color=colors[name], edgecolor="white", linewidth=1, zorder=3,
-        )
-        for predicted, observed, count in zip(points["predicted"], rate, n):
-            ax.annotate(
-                f"n={count}", (predicted, observed),
-                xytext=(7 if predicted < 0.8 else -7, 10 if observed < 0.9 else -18),
-                textcoords="offset points", ha="left" if predicted < 0.8 else "right",
-                fontsize=9, color="#46505F",
-            )
-        ax.set(
-            title=name, xlabel="Mean predicted probability", ylabel="Observed positive fraction",
-            xlim=(-0.04, 1.04), ylim=(-0.05, 1.05),
-        )
-        ax.grid(color="#EEF0F4")
-
-        ax = axes[1, column]
-        ax.hist(
-            [probabilities[y_true == 0], probabilities[y_true == 1]],
-            bins=np.linspace(0, 1, 11), stacked=True,
-            color=["#D5DCE6", "#101075"], edgecolor="white",
-            label=["Actual negative", "Actual positive"],
-        )
-        ax.set(
-            xlabel="Predicted probability", ylabel="Test rows",
-            xlim=(0, 1), ylim=(0, largest_bin * 1.15),
-        )
-        ax.legend(fontsize=8, loc="upper center")
-        ax.set_axisbelow(True)
-        ax.yaxis.grid(color="#EEF0F4")
-
-    fig.suptitle(
-        "Calibration and probability distribution\n"
-        "Same five probability bins · marker size = count · error bars = 95% Wilson intervals",
-        color="#101075", fontsize=13, fontweight="bold",
-    )
-    plt.show()
-
-
-def replace_test_duplicates(X, y, X_train, X_test, y_test):
-    """Replace test rows seen in training; preserve test size and class counts."""
-    training_features = pd.MultiIndex.from_frame(X_train)
-    overlap = pd.MultiIndex.from_frame(X_test).isin(training_features)
-    kept = X_test.loc[~overlap].copy()
-    candidates = X.drop(index=X_train.index.union(X_test.index))
-    excluded = training_features.append(pd.MultiIndex.from_frame(kept))
-    candidates = candidates.loc[~pd.MultiIndex.from_frame(candidates).isin(excluded)]
-    candidates = candidates.drop_duplicates()
-    for label, count in y_test.value_counts().items():
-        needed = int(count - (y.loc[kept.index] == label).sum())
-        extra = candidates.loc[y.loc[candidates.index] == label].sample(
-            n=needed, random_state=RANDOM_STATE,
-        )
-        kept = pd.concat([kept, extra])
-    assert not pd.MultiIndex.from_frame(kept).isin(training_features).any()
-    assert len(kept) == len(X_test)
-    print(f"Replaced {int(overlap.sum())} test rows matching training features.")
-    return kept, y.loc[kept.index]
-```
-
-## Fraudulent job postings
-
 ### Download and split
 
-[EMSCAD / Fake Job Postings](https://www.kaggle.com/datasets/shivamb/real-or-fake-fake-jobposting-prediction) contains 17,880 real job advertisements, including 866 labeled fraudulent. The [original paper](https://doi.org/10.3390/fi9010006) describes manual annotation by Workable staff.
+[EMSCAD / Fake Job Postings](https://www.kaggle.com/datasets/shivamb/real-or-fake-fake-jobposting-prediction) has 17,880 postings, including 866 fraud cases (4.8%). Kaggle lists it under CC0. The [original paper](https://doi.org/10.3390/fi9010006) describes its annotation.
 
-The inputs mix job descriptions, requirements and company profiles with categories such as industry, employment type and education, plus binary flags. We exclude only the row identifier and target; we do not clean text, parse salaries, fill missing values or do feature engineering.
+We use all 16 input fields, including descriptions, requirements, industry, employment type and binary flags. Only the identifier and target are excluded. Text, salary strings and missing values pass through unchanged.
 
-Both models first receive **44 training rows**, including two fraud cases, which reflects the amount of fraud in the dataset overall. This context fits Jev with these records and this prompt; it is not a universal row limit. We replace test postings whose features occur in any training set, keeping 300 test rows with the same class balance.
+We hold out 300 postings with a stratified random split, then take 44 training rows from a fixed shuffle. We exclude any remaining training posting whose features exactly match a test posting. This prevents exact train–test duplicates without modifying feature values.
 
 ```python
 jobs = kagglehub.dataset_load(
@@ -288,66 +94,36 @@ jobs = kagglehub.dataset_load(
     "shivamb/real-or-fake-fake-jobposting-prediction",
     "fake_job_postings.csv",
 )
+X = jobs.drop(columns=["job_id", "fraudulent"])
+y = jobs["fraudulent"]
 
-X_jobs = jobs.drop(columns=["job_id", "fraudulent"])
-y_jobs = jobs["fraudulent"]
-
-X_jobs_pool, X_jobs_test, y_jobs_pool, y_jobs_test = train_test_split(
-    X_jobs,
-    y_jobs,
-    test_size=300,
-    stratify=y_jobs,
-    random_state=RANDOM_STATE,
+X_pool, X_test, _, y_test = train_test_split(
+    X, y, test_size=300, stratify=y, random_state=RANDOM_STATE,
 )
+X_jev = X_pool.sample(frac=1, random_state=RANDOM_STATE).iloc[:44]
+y_jev = y.loc[X_jev.index]
 
-JOBS_TRAIN_ROWS = 44
-X_jobs_train = X_jobs_pool.sample(frac=1, random_state=RANDOM_STATE).iloc[:JOBS_TRAIN_ROWS]
-y_jobs_train = y_jobs_pool.loc[X_jobs_train.index]
+matches_test = pd.MultiIndex.from_frame(X_pool).isin(pd.MultiIndex.from_frame(X_test))
+X_full = X_pool.loc[~matches_test]
+y_full = y.loc[X_full.index]
 
-jobs_training_sets = {44: (X_jobs_train.copy(), y_jobs_train.copy())}
+assert X_jev.index.isin(X_full.index).all()
+assert X_full.index.intersection(X_test.index).empty
+assert not pd.MultiIndex.from_frame(X_full).isin(pd.MultiIndex.from_frame(X_test)).any()
 
-X_more, y_more = X_jobs_train.copy(), y_jobs_train.copy()
-for training_size in [1_000, 5_000]:
-    available = X_jobs.drop(index=X_jobs_test.index.union(X_more.index))
-    X_extra, _, y_extra, _ = train_test_split(
-        available,
-        y_jobs.loc[available.index],
-        train_size=training_size - len(X_more),
-        stratify=y_jobs.loc[available.index],
-        random_state=RANDOM_STATE,
-    )
-    X_more = pd.concat([X_more, X_extra])
-    y_more = pd.concat([y_more, y_extra])
-    jobs_training_sets[training_size] = (X_more.copy(), y_more.copy())
-
-X_1000, y_1000 = jobs_training_sets[1_000]
-available = X_1000.drop(index=X_jobs_train.index)
-X_extra, _, y_extra, _ = train_test_split(
-    available,
-    y_1000.loc[available.index],
-    train_size=300 - len(X_jobs_train),
-    stratify=y_1000.loc[available.index],
-    random_state=RANDOM_STATE,
-)
-jobs_training_sets[300] = (
-    pd.concat([X_jobs_train, X_extra]),
-    pd.concat([y_jobs_train, y_extra]),
-)
-
-X_jobs_test, y_jobs_test = replace_test_duplicates(
-    X_jobs, y_jobs, jobs_training_sets[5_000][0], X_jobs_test, y_jobs_test,
-)
-
-print(f"Training: {X_jobs_train.shape}; test: {X_jobs_test.shape}")
-print(f"Fraud cases: {y_jobs_train.sum()} in training; {y_jobs_test.sum()} in test.")
-display(X_jobs_train.head(3))
+print(f"Jev: {len(X_jev)} training rows, {y_jev.sum()} fraud cases")
+print(f"TabPFN full data: {len(X_full):,} training rows, {y_full.sum()} fraud cases")
+print(f"Test: {len(X_test)} rows, {y_test.sum()} fraud cases")
+print(f"Excluded {matches_test.sum()} training postings matching test features.")
+display(X_jev.head(3))
 ```
 
 ```console
 Warning: Looks like you're using an outdated `kagglehub` version (installed: 0.3.13), please consider upgrading to the latest version (1.0.2).
-Replaced 4 test rows matching training features.
-Training: (44, 16); test: (300, 16)
-Fraud cases: 2 in training; 15 in test.
+Jev: 44 training rows, 2 fraud cases
+TabPFN full data: 17,567 training rows, 851 fraud cases
+Test: 300 rows, 15 fraud cases
+Excluded 13 training postings matching test features.
                             title             location       department  \
 8708  Primary Care Outreach Nurse       CA, ON, Ottawa  Health Services
 1701   Chrome Extension Developer  US, CA, Los Angeles              NaN
@@ -384,36 +160,19 @@ Fraud cases: 2 in training; 15 in test.
 8933  High School or equivalent          Legal Services      Customer Service
 ```
 
-### TabPFN Plus: the same 44 examples
+### Why 44 examples?
 
-Use TabPFN 3.5 Plus with eight estimators and seed 42. Missing fields remain missing; the client handles text internally.
+Jev 1.13 has a [32k-token budget for the state plus the longest question](https://docs.typesafe.ai/models). With this fixed row order, all 16 fields and the prompt below, 44 examples fit every test request; adding the next example exceeded the API's context limit for a long test posting in our sizing check. **44 is the limit for this particular setup, not a universal row limit.** Shorter records or a different representation could fit more.
 
-In `tabpfn-client`, `create_default_for_version("v3.5")` selects the hosted **TabPFN-3.5-Plus**, as documented in [model selection](https://docs.priorlabs.ai/models/selecting-model-version).
-
-```python
-jobs_model = TabPFNClassifier.create_default_for_version(
-    "v3.5",
-    n_estimators=8,
-    random_state=RANDOM_STATE,
-)
-
-jobs_model.fit(X_jobs_train, y_jobs_train)
-jobs_tabpfn = jobs_model.predict_proba(X_jobs_test)[:, list(jobs_model.classes_).index(1)]
-```
-
-### Jev: the same 44 examples
-
-Jev receives all 16 input fields for each training example and test posting. JSON serialization represents missing fields as `null`; it does not impute them. We use Noul's fraud probability, not its confidence field.
+These 44 examples contain two fraud cases. Jev receives the same examples for each test posting and returns a `noul` fraud probability. Missing fields serialize as JSON `null`.
 
 ```python
-import json
-
-jobs_train_records = json.loads(X_jobs_train.to_json(orient="records"))
-jobs_test_records = json.loads(X_jobs_test.to_json(orient="records"))
+jobs_train_records = json.loads(X_jev.to_json(orient="records"))
+jobs_test_records = json.loads(X_test.to_json(orient="records"))
 
 jobs_examples = [
     {"features": features, "fraudulent": bool(label)}
-    for features, label in zip(jobs_train_records, y_jobs_train)
+    for features, label in zip(jobs_train_records, y_jev)
 ]
 
 jobs_state = {
@@ -463,344 +222,237 @@ jobs_jev = np.array(jobs_jev)
 print(f"Jev returned {len(jobs_jev)} predictions.")
 ```
 
-### What happens with 44 training examples?
+```console
+Jev returned 300 predictions.
+```
 
-At the default 0.5 threshold, **Jev catches 8 of 15 fraud cases but raises 27 false alarms**: only 23% of its alerts are real fraud, and it misses 47% of the fraud cases. F1 is 0.320. The first chart shows that review workload directly.
+### Read the results
 
-TabPFN at the same training size catches no fraud and raises one false alarm. Jev ranks fraud better (average precision 0.360 versus 0.154), but neither default setting gives a convincing fraud filter. Both models have seen only two fraud examples. We then test more training data and validation-selected thresholds.
+**ROC AUC** measures how often a fraud case ranks above a legitimate posting: 0.5 is random, 1.0 is perfect. **Average precision (AP)** summarizes how reliably the top of a review queue contains fraud; higher is better. Random ranking has a reference AP of about 0.05 on this test set.
+
+**Brier score** is the average squared probability error. **Log loss** penalizes confident mistakes more heavily. Lower is better for both; neither is an error percentage. These metrics use probabilities directly, without choosing a decision cutoff.
 
 ```python
-jobs_predictions = {"TabPFN Plus": jobs_tabpfn, "Jev": jobs_jev}
-jobs_results = evaluate(
-    y_jobs_test,
-    {
-        "Training-prior baseline": np.full(len(y_jobs_test), y_jobs_train.mean()),
-        **jobs_predictions,
-    },
-)
-display(jobs_results.loc[["TabPFN Plus", "Jev"], ["Fraud caught", "Fraud missed", "False alarms", "Precision", "Recall", "F1"]].round(3))
-plot_results(y_jobs_test, jobs_predictions, "Job fraud · 44 training rows, 300 test rows")
+def evaluate(y_true, probabilities):
+    return {
+        "ROC AUC": roc_auc_score(y_true, probabilities),
+        "Average precision": average_precision_score(y_true, probabilities),
+        "Brier": brier_score_loss(y_true, probabilities),
+        "Log loss": log_loss(y_true, probabilities, labels=[0, 1]),
+    }
+
+
+def plot_ranking(y_true, predictions):
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), layout="constrained")
+    for name, probabilities in predictions.items():
+        fpr, tpr, _ = roc_curve(y_true, probabilities)
+        precision, recall, _ = precision_recall_curve(y_true, probabilities)
+        scores = evaluate(y_true, probabilities)
+        axes[0].plot(
+            fpr, tpr, color=colors[name], linewidth=2.5,
+            label=f"{name} · AUC {scores['ROC AUC']:.4f}",
+        )
+        axes[1].step(
+            recall, precision, where="post", color=colors[name], linewidth=2.5,
+            label=f"{name} · AP {scores['Average precision']:.3f}",
+        )
+    axes[0].plot([0, 1], [0, 1], "--", color="#CCD2DC", label="Random ranking")
+    axes[1].axhline(np.mean(y_true), linestyle="--", color="#CCD2DC", label="Fraud prevalence")
+    axes[0].set(title="ROC", xlabel="False positive rate", ylabel="True positive rate")
+    axes[1].set(title="Precision–recall", xlabel="Recall", ylabel="Precision")
+    for ax in axes:
+        ax.set(xlim=(-0.02, 1.02), ylim=(-0.02, 1.02))
+        ax.grid(color="#EEF0F4")
+        ax.legend(fontsize=9, loc="lower right" if ax is axes[0] else "upper right")
+    plt.show()
+
+
+jev_scores = evaluate(y_test, jobs_jev)
+display(pd.DataFrame([{"Model": "Jev", "Training rows": 44, **jev_scores}]).round(3))
+plot_ranking(y_test, {"Jev": jobs_jev})
+display(Markdown(
+    f"Jev reaches **ROC AUC {jev_scores['ROC AUC']:.4f}** and "
+    f"**AP {jev_scores['Average precision']:.3f}** from 44 examples. "
+    "It separates fraud from legitimate postings better than random, but the precision–recall "
+    "curve shows that recovering more fraud also brings legitimate postings into the review queue."
+))
 ```
 
 ```console
-             Fraud caught  Fraud missed  False alarms  Precision  Recall    F1
-Model
-TabPFN Plus             0            15             1      0.000   0.000  0.00
-Jev                     8             7            27      0.229   0.533  0.32
+  Model  Training rows  ROC AUC  Average precision  Brier  Log loss
+0   Jev             44    0.888              0.362  0.101     0.352
+<IPython.core.display.Markdown object>
 ```
 
-![What happens with 44 training examples?](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-01.png)
+![Read the results](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-01.png)
 
-![What happens with 44 training examples?](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-02.png)
+## 2. TabPFN Plus: use the full training data
 
-![What happens with 44 training examples?](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-03.png)
+The context budget leaves most labeled postings unused by Jev. TabPFN can use **all 17,567 eligible training rows** here, including the same 44 examples, and predict on the same 300 test postings. This is the full available training set for this dataset, not TabPFN's maximum supported size.
 
-### More training data: 300, 1,000 and 5,000 rows
+We use the hosted [TabPFN-3.5-Plus](https://docs.priorlabs.ai/models/selecting-model-version), selected by `create_default_for_version("v3.5")` in `tabpfn-client`, with eight estimators and seed 42. The client handles text internally; we apply no custom preprocessing.
 
-Keep the same 300 test postings and expand TabPFN's training data.
-
-We first construct the 1,000- and 5,000-row sets, then draw the 300-row subset from the 1,000-row set. Raw values remain unchanged. Before either model runs, we replace test postings that match any of the 5,000 training postings. All training sizes are nested, so this removes exact train–test matches from every comparison.
+This comparison measures the benefit of using more labeled data. It does not isolate model quality at equal training size.
 
 ```python
-jobs_test_predictions = {44: jobs_tabpfn}
+full_model = TabPFNClassifier.create_default_for_version(
+    "v3.5", n_estimators=8, random_state=RANDOM_STATE,
+)
+full_model.fit(X_full, y_full)
+full_probabilities = full_model.predict_proba(X_test)[:, list(full_model.classes_).index(1)]
+```
 
-jobs_learning_rows = []
-for training_size in [300, 1_000, 5_000]:
-    X_fit, y_fit = jobs_training_sets[training_size]
-    assert X_fit.index.intersection(X_jobs_test.index).empty
-    assert not pd.MultiIndex.from_frame(X_jobs_test).isin(pd.MultiIndex.from_frame(X_fit)).any()
+```python
+full_scores = evaluate(y_test, full_probabilities)
+full_results = pd.DataFrame([
+    {"Model": "Jev", "Training rows": len(X_jev), **jev_scores},
+    {"Model": "TabPFN Plus", "Training rows": len(X_full), **full_scores},
+]).set_index("Model")
+display(full_results.round(4))
+
+fig, axes = plt.subplots(1, 4, figsize=(13, 3.4), layout="constrained")
+for ax, metric in zip(axes, ["ROC AUC", "Average precision", "Brier", "Log loss"]):
+    values = full_results[metric]
+    bars = ax.bar(values.index, values, color=[colors[name] for name in values.index], width=0.55)
+    ax.bar_label(bars, fmt="%.4f" if metric == "ROC AUC" else "%.3f", padding=5, fontsize=11)
+    higher_is_better = metric in ["ROC AUC", "Average precision"]
+    ax.set_title(metric + (" ↑" if higher_is_better else " ↓"))
+    ax.set_ylim(0, 1.15 if higher_is_better else values.max() * 1.3)
+    ax.set_axisbelow(True)
+    ax.grid(axis="y", color="#EEF0F4")
+fig.suptitle(
+    f"Jev: 44 examples · TabPFN Plus: {len(X_full):,} examples · same 300 test postings",
+    color=colors["TabPFN Plus"], fontsize=13, fontweight="bold",
+)
+plt.show()
+plot_ranking(y_test, {"Jev": jobs_jev, "TabPFN Plus": full_probabilities})
+
+display(Markdown(
+    f"With all available training data, TabPFN reaches **ROC AUC {full_scores['ROC AUC']:.4f}** "
+    f"and **AP {full_scores['Average precision']:.3f}**, compared with "
+    f"{jev_scores['ROC AUC']:.4f} and {jev_scores['Average precision']:.3f} for Jev. "
+    "Higher AP means fraud is concentrated nearer the top of the review queue. "
+    f"Brier is {full_scores['Brier']:.3f} versus {jev_scores['Brier']:.3f}; "
+    "a lower value means smaller probability errors across the test postings."
+))
+```
+
+```console
+             Training rows  ROC AUC  Average precision   Brier  Log loss
+Model
+Jev                     44   0.8883             0.3621  0.1006    0.3525
+TabPFN Plus          17567   0.9995             0.9914  0.0074    0.0222
+<IPython.core.display.Markdown object>
+```
+
+![2. TabPFN Plus: use the full training data](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-02.png)
+
+![2. TabPFN Plus: use the full training data](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-03.png)
+
+## 3. What if you don't have so much data?
+
+Compare 44, 100, 150, 300, 500, 750 and 1,000 TabPFN training rows with Jev's 44-example result. Start with the identical 44 rows and add randomly selected, stratified batches, so each training set contains the previous one. Keep every feature, the model settings and the test postings fixed.
+
+We report every tested size and identify the smallest one whose ROC AUC exceeds Jev's. This is an exploratory comparison on a test set used throughout cookbook development, not an independently confirmed minimum. There are only 15 fraud cases in the test set.
+
+```python
+training_sizes = [44, 100, 150, 300, 500, 750, 1_000]
+X_small = X_jev.copy()
+small_results = []
+
+for size in training_sizes:
+    if size > len(X_small):
+        available = X_full.drop(index=X_small.index)
+        extra, _ = train_test_split(
+            available,
+            train_size=size - len(X_small),
+            stratify=y.loc[available.index],
+            random_state=RANDOM_STATE,
+        )
+        X_small = pd.concat([X_small, extra])
+
     model = TabPFNClassifier.create_default_for_version(
         "v3.5", n_estimators=8, random_state=RANDOM_STATE,
     )
-    model.fit(X_fit, y_fit)
-    probabilities = model.predict_proba(X_jobs_test)[:, list(model.classes_).index(1)]
-    jobs_test_predictions[training_size] = probabilities
-    scores = evaluate(y_jobs_test, {"TabPFN Plus": probabilities}).loc["TabPFN Plus"]
-    jobs_learning_rows.append({
-        "Model": "TabPFN Plus", "Training rows": training_size, **scores.to_dict(),
+    model.fit(X_small, y.loc[X_small.index])
+    probabilities = model.predict_proba(X_test)[:, list(model.classes_).index(1)]
+    small_results.append({
+        "Training rows": size,
+        "Fraud examples": int(y.loc[X_small.index].sum()),
+        **evaluate(y_test, probabilities),
     })
+    print(f"Completed {size:,} training rows.")
 
-jobs_learning_rows.append({
-    "Model": "Jev", "Training rows": len(X_jobs_train),
-    **evaluate(y_jobs_test, {"Jev": jobs_jev}).loc["Jev"].to_dict(),
-})
-jobs_learning_results = pd.DataFrame(jobs_learning_rows)
+small_results = pd.DataFrame(small_results).set_index("Training rows")
+display(small_results.round(3))
+```
+
+```console
+Completed 44 training rows.
+Completed 100 training rows.
+Completed 150 training rows.
+Completed 300 training rows.
+Completed 500 training rows.
+Completed 750 training rows.
+Completed 1,000 training rows.
+               Fraud examples  ROC AUC  Average precision  Brier  Log loss
+Training rows
+44                          2    0.751              0.156  0.048     0.239
+100                         5    0.865              0.396  0.041     0.157
+150                         7    0.863              0.322  0.042     0.163
+300                        14    0.903              0.353  0.040     0.141
+500                        24    0.985              0.812  0.025     0.079
+750                        36    0.963              0.696  0.027     0.093
+1000                       48    0.969              0.704  0.025     0.085
 ```
 
 ```python
-metrics = ["Average precision", "Recall", "Brier", "Log loss"]
-fig, axes = plt.subplots(1, 4, figsize=(15, 3.8), layout="constrained")
-tabpfn_scores = jobs_learning_results[jobs_learning_results["Model"] == "TabPFN Plus"].sort_values("Training rows")
-jev_scores = jobs_learning_results[jobs_learning_results["Model"] == "Jev"].iloc[0]
-sizes = tabpfn_scores["Training rows"]
-
-for ax, metric in zip(axes, metrics):
+fig, axes = plt.subplots(1, 2, figsize=(11, 4.3), layout="constrained")
+for ax, metric in zip(axes, ["ROC AUC", "Average precision"]):
     ax.plot(
-        sizes, tabpfn_scores[metric], "o-",
+        small_results.index, small_results[metric], "o-",
         color=colors["TabPFN Plus"], linewidth=2.5, label="TabPFN Plus",
     )
     ax.axhline(
-        jev_scores[metric], color=colors["Jev"], linestyle="--",
-        label=f"Jev · {int(jev_scores['Training rows'])} training rows",
+        jev_scores[metric], color=colors["Jev"], linestyle="--", linewidth=2,
+        label=f"Jev · 44 examples · {jev_scores[metric]:.3f}",
     )
-    for size, value in zip(sizes, tabpfn_scores[metric]):
-        label = f"{value:.1%}" if metric == "Accuracy" else f"{value:.3f}"
-        ax.annotate(label, (size, value), xytext=(0, 10),
-                    textcoords="offset points", ha="center", fontsize=9)
-    ax.set_xscale("log")
-    ax.set_xticks(sizes, [f"{size:,}" for size in sizes], fontsize=9)
-    ax.minorticks_off()
-    ax.set_xlabel("TabPFN training rows")
-    ax.set_title(metric + (" ↑" if metric in ["Average precision", "Recall"] else " ↓"))
-    ax.grid(axis="y", color="#EEF0F4")
-    if metric in ["Average precision", "Recall"]:
-        ax.set_ylim(0, 1.12)
-    else:
-        ax.set_ylim(0, max(tabpfn_scores[metric].max(), jev_scores[metric]) * 1.25)
-
-axes[0].legend(loc="lower right", fontsize=8)
-fig.suptitle("Job fraud: more training data · same 300 test rows", fontsize=16,
-             fontweight="bold", color=colors["TabPFN Plus"])
-plt.show()
-```
-
-![More training data: 300, 1,000 and 5,000 rows](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-04.png)
-
-More labels help TabPFN put fraud cases near the top of a review queue: at 5,000 rows, average precision is 0.957, versus Jev's 0.360 with 44 examples. It catches 10 of 15 fraud cases with no false alarms at the default 0.5 threshold. Brier of 0.009 means small probability errors; the calibration plot separately checks whether estimated risks match observed rates.
-
-#### Calibrated probabilities + F1 threshold
-
-For both models, fit a temperature to minimize training-only validation log loss, then choose a threshold that maximizes validation F1. F1 balances precision and recall; it does not simply maximize fraud caught. Test labels are used only for evaluation.
-
-```python
-from sklearn.model_selection import StratifiedKFold
-
-jobs_oof_predictions = {}
-
-for training_size in [44, 300, 1_000, 5_000]:
-    X_fit, y_fit = jobs_training_sets[training_size]
-    n_folds = min(5, int(y_fit.value_counts().min()))
-    folds = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=RANDOM_STATE)
-    oof = np.full(len(X_fit), np.nan)
-
-    for fold, (train_idx, valid_idx) in enumerate(folds.split(X_fit, y_fit)):
-        model = TabPFNClassifier.create_default_for_version(
-            "v3.5",
-            n_estimators=8,
-            random_state=RANDOM_STATE,
-            balance_probabilities=False,
+    for size, value in small_results[metric].items():
+        ax.annotate(
+            f"{value:.3f}", (size, value), xytext=(0, 9),
+            textcoords="offset points", ha="center", fontsize=8,
         )
-        model.fit(X_fit.iloc[train_idx], y_fit.iloc[train_idx])
-        oof[valid_idx] = model.predict_proba(X_fit.iloc[valid_idx])[
-            :, list(model.classes_).index(1)
-        ]
-        print(f"TabPFN {training_size:,} rows: validation fold {fold + 1}/{n_folds}.")
-
-    jobs_oof_predictions[training_size] = oof
-```
-
-```console
-TabPFN 44 rows: validation fold 1/2.
-TabPFN 44 rows: validation fold 2/2.
-TabPFN 300 rows: validation fold 1/5.
-TabPFN 300 rows: validation fold 2/5.
-TabPFN 300 rows: validation fold 3/5.
-TabPFN 300 rows: validation fold 4/5.
-TabPFN 300 rows: validation fold 5/5.
-TabPFN 1,000 rows: validation fold 1/5.
-TabPFN 1,000 rows: validation fold 2/5.
-TabPFN 1,000 rows: validation fold 3/5.
-TabPFN 1,000 rows: validation fold 4/5.
-TabPFN 1,000 rows: validation fold 5/5.
-TabPFN 5,000 rows: validation fold 1/5.
-TabPFN 5,000 rows: validation fold 2/5.
-TabPFN 5,000 rows: validation fold 3/5.
-TabPFN 5,000 rows: validation fold 4/5.
-TabPFN 5,000 rows: validation fold 5/5.
-```
-
-```python
-jobs_jev_oof = np.full(len(X_jobs_train), np.nan)
-jev_folds = StratifiedKFold(n_splits=2, shuffle=True, random_state=RANDOM_STATE)
-
-with httpx.Client(
-    headers={"Authorization": f"Bearer {jev_key}"},
-    timeout=120,
-) as client:
-    for train_idx, valid_idx in jev_folds.split(X_jobs_train, y_jobs_train):
-        fold_examples = [
-            {"features": features, "fraudulent": bool(label)}
-            for features, label in zip(
-                json.loads(X_jobs_train.iloc[train_idx].to_json(orient="records")),
-                y_jobs_train.iloc[train_idx],
-            )
-        ]
-        valid_records = json.loads(X_jobs_train.iloc[valid_idx].to_json(orient="records"))
-
-        for position, features in zip(valid_idx, valid_records):
-            response = client.post(
-                JEV_URL,
-                json={
-                    "model": JEV_MODEL,
-                    "state": {
-                        **jobs_state,
-                        "labelled_training_examples": fold_examples,
-                        "posting_to_classify": features,
-                    },
-                    "questions": {"is_fraudulent": jobs_question},
-                },
-            )
-            response.raise_for_status()
-            jobs_jev_oof[position] = response.json()["answers"]["is_fraudulent"]["noul"]
-
-print(f"Jev returned {len(jobs_jev_oof)} out-of-fold training predictions.")
-```
-
-```console
-Jev returned 44 out-of-fold training predictions.
-```
-
-```python
-from scipy.optimize import minimize_scalar
-from scipy.special import expit, logit
-from sklearn.metrics import precision_score
-
-
-def temperature_scale(probabilities, temperature):
-    logits = logit(np.clip(probabilities, 1e-6, 1 - 1e-6))
-    return expit(logits / temperature)
-
-
-def fit_temperature(y_valid, probabilities):
-    result = minimize_scalar(
-        lambda log_temperature: log_loss(
-            y_valid,
-            temperature_scale(probabilities, np.exp(log_temperature)),
-            labels=[0, 1],
-        ),
-        bounds=(np.log(0.1), np.log(10)),
-        method="bounded",
-    )
-    return float(np.exp(result.x))
-
-
-def select_f1_threshold(y_valid, probabilities):
-    precision, recall, thresholds = precision_recall_curve(y_valid, probabilities)
-    f1 = 2 * precision[:-1] * recall[:-1] / np.maximum(
-        precision[:-1] + recall[:-1], 1e-12
-    )
-    best = np.flatnonzero(np.isclose(f1, f1.max()))[-1]
-    return float(thresholds[best])
-
-
-def score_predictions(y_true, probabilities, threshold):
-    labels = probabilities >= threshold
-    return {
-        "Accuracy": accuracy_score(y_true, labels),
-        "Precision": precision_score(y_true, labels, zero_division=0),
-        "Recall": recall_score(y_true, labels, zero_division=0),
-        "F1": f1_score(y_true, labels, zero_division=0),
-        "AUROC": roc_auc_score(y_true, probabilities),
-        "Average precision": average_precision_score(y_true, probabilities),
-        "Log loss": log_loss(y_true, probabilities, labels=[0, 1]),
-        "Brier": brier_score_loss(y_true, probabilities),
-        "False positives": int(np.sum(labels & (np.asarray(y_true) == 0))),
-    }
-```
-
-```python
-jobs_tuned_predictions = {}
-jobs_tuned_thresholds = {}
-
-for training_size in [44, 300, 1_000, 5_000]:
-    _, y_fit = jobs_training_sets[training_size]
-    oof = jobs_oof_predictions[training_size]
-    temperature = fit_temperature(y_fit, oof)
-    calibrated_oof = temperature_scale(oof, temperature)
-    threshold = select_f1_threshold(y_fit, calibrated_oof)
-
-    jobs_tuned_predictions[training_size] = temperature_scale(
-        jobs_test_predictions[training_size], temperature
-    )
-    jobs_tuned_thresholds[training_size] = threshold
-
-jev_temperature = fit_temperature(y_jobs_train, jobs_jev_oof)
-jev_calibrated_oof = temperature_scale(jobs_jev_oof, jev_temperature)
-jev_threshold = select_f1_threshold(y_jobs_train, jev_calibrated_oof)
-jobs_jev_tuned = temperature_scale(jobs_jev, jev_temperature)
-```
-
-```python
-comparison_rows = []
-
-for training_size in [44, 300, 1_000, 5_000]:
-    threshold = jobs_tuned_thresholds[training_size]
-    comparison_rows.append({
-        "Model": "TabPFN Plus",
-        "Training rows": training_size,
-        "Threshold": threshold,
-        **score_predictions(y_jobs_test, jobs_tuned_predictions[training_size], threshold),
-    })
-
-comparison_rows.append({
-    "Model": "Jev",
-    "Training rows": len(X_jobs_train),
-    "Threshold": jev_threshold,
-    **score_predictions(y_jobs_test, jobs_jev_tuned, jev_threshold),
-})
-
-jobs_comparison = pd.DataFrame(comparison_rows)
-```
-
-```python
-uncalibrated_rows = [
-    {
-        "Training rows": training_size,
-        **score_predictions(y_jobs_test, probabilities, threshold=0.5),
-    }
-    for training_size, probabilities in sorted(jobs_test_predictions.items())
-]
-uncalibrated_tabpfn = pd.DataFrame(uncalibrated_rows)
-uncalibrated_jev = score_predictions(y_jobs_test, jobs_jev, threshold=0.5)
-tabpfn_scores = jobs_comparison[(jobs_comparison["Model"] == "TabPFN Plus")]
-jev_scores = jobs_comparison[jobs_comparison["Model"] == "Jev"].iloc[0]
-
-fig, axes = plt.subplots(1, 3, figsize=(14, 4.8), layout="constrained")
-
-for ax, metric in zip(axes, ["F1", "Recall", "Precision"]):
-    ax.plot(
-        tabpfn_scores["Training rows"], tabpfn_scores[metric], "o-",
-        color=colors["TabPFN Plus"], linewidth=2,
-        label="TabPFN · calibrated + F1 threshold",
-    )
-    ax.plot(
-        uncalibrated_tabpfn["Training rows"], uncalibrated_tabpfn[metric], "o--",
-        color=colors["TabPFN Plus"], linewidth=2, markerfacecolor="white",
-        label="TabPFN · uncalibrated, threshold 0.5",
-    )
-    ax.axhline(
-        jev_scores[metric], color=colors["Jev"], linewidth=2,
-        label="Jev · calibrated + F1 threshold · 44 rows",
-    )
-    ax.axhline(
-        uncalibrated_jev[metric], color=colors["Jev"], linewidth=2, linestyle="--",
-        label="Jev · uncalibrated, threshold 0.5 · 44 rows",
-    )
     ax.set_xscale("log")
-    ax.set_xticks([44, 300, 1_000, 5_000], ["44", "300", "1,000", "5,000"])
+    ax.set_xticks(training_sizes, [f"{size:,}" for size in training_sizes])
     ax.minorticks_off()
-    ax.set_xlabel("TabPFN training rows")
-    ax.set_title(metric + " ↑")
-    ax.set_ylim(0, 1.05)
+    ax.set(title=metric + " ↑", xlabel="TabPFN training rows",
+           ylim=(0.5, 1.05) if metric == "ROC AUC" else (0, 1.10))
     ax.grid(axis="y", color="#EEF0F4")
-
-handles, labels = axes[0].get_legend_handles_labels()
-fig.legend(handles, labels, loc="outside lower center", ncol=2, fontsize=9, frameon=False)
-fig.suptitle("Job fraud · before and after calibration + F1 threshold selection", fontsize=15,
-             fontweight="bold", color=colors["TabPFN Plus"])
+    ax.legend(loc="lower right", fontsize=9)
 plt.show()
+
+better = small_results[small_results["ROC AUC"] > jev_scores["ROC AUC"]]
+if len(better):
+    smallest = int(better.index[0])
+    scores = better.iloc[0]
+    display(Markdown(
+        f"**{smallest:,} training rows is the smallest tested size that beats Jev on ROC AUC**: "
+        f"{scores['ROC AUC']:.4f} versus {jev_scores['ROC AUC']:.4f}, using "
+        f"{smallest - len(X_jev):,} additional examples. "
+        "That means you can improve the ordering of the review queue without using the full dataset. "
+        f"AP is {scores['Average precision']:.3f} versus {jev_scores['Average precision']:.3f} for Jev, "
+        "so read the AUC comparison alongside the quality of the top-ranked results. "
+        "The crossover can change with a different sample."
+    ))
+else:
+    display(Markdown(
+        "None of these smaller training sets exceeds Jev's ROC AUC on this split. "
+        "The full-data result does not imply the same advantage with a small labeled dataset."
+    ))
 ```
 
-![Calibrated probabilities + F1 threshold](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-05.png)
+```console
+<IPython.core.display.Markdown object>
+```
 
-With calibration and an F1-selected threshold, TabPFN at 5,000 rows catches **13 of 15 fraud cases with one false alarm** (F1 0.897). Recall measures fraud caught; precision measures how many alerts deserve review. Its Brier score of 0.009 indicates small probability errors. Jev catches 8 cases with 24 false alarms after tuning. This makes TabPFN worth testing on a larger, fresh fraud sample; 15 test cases are too few to establish production readiness.
+![3. What if you don't have so much data?](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-04.png)
