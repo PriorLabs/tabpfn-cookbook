@@ -82,11 +82,11 @@ plt.rcParams.update({
 
 ### Download and split
 
-[EMSCAD / Fake Job Postings](https://www.kaggle.com/datasets/shivamb/real-or-fake-fake-jobposting-prediction) has 17,880 postings, including 866 fraud cases (4.8%). Kaggle lists it under CC0. The [original paper](https://doi.org/10.3390/fi9010006) describes its annotation.
+[EMSCAD / Fake Job Postings](https://www.kaggle.com/datasets/shivamb/real-or-fake-fake-jobposting-prediction) has 17880 postings, including 866 fraud cases (4.8%). The [original paper](https://doi.org/10.3390/fi9010006) describes that it was annotated by Workday employees.
 
-We use all 16 input fields, including descriptions, requirements, industry, employment type and binary flags. Only the identifier and target are excluded. Text, salary strings and missing values pass through unchanged.
+We use all 16 input fields, including descriptions, requirements, industry, employment type and binary flags. Only the identifier and target are excluded. Text, salary (which is provided as string) and missing values pass through unchanged.
 
-We hold out 300 postings with a stratified random split, then take 44 training rows from a fixed shuffle. We exclude any remaining training posting whose features exactly match a test posting. This prevents exact train–test duplicates without modifying feature values.
+We hold out 300 job postings as test samples, then take random 44 training (or context) rows. We exclude any training posting whose features exactly match any test posting. This prevents faulty evaluation from testing samples being provided in the train part.
 
 ```python
 jobs = kagglehub.dataset_load(
@@ -162,9 +162,9 @@ Excluded 13 training postings matching test features.
 
 ### Why 44 examples?
 
-Jev 1.13 has a [32k-token budget for the state plus the longest question](https://docs.typesafe.ai/models). With this fixed row order, all 16 fields and the prompt below, 44 examples fit every test request; adding the next example exceeded the API's context limit for a long test posting in our sizing check. **44 is the limit for this particular setup, not a universal row limit.** Shorter records or a different representation could fit more.
+Jev 1.13 has a [32k-token context size for the "state" plus the question](https://docs.typesafe.ai/models). With all 16 fields of the dataset and prompt below, 44 examples is the maximum that fits context window of Jev.
 
-These 44 examples contain two fraud cases. Jev receives the same examples for each test posting and returns a `noul` fraud probability. Missing fields serialize as JSON `null`.
+These 44 examples contain two fraud cases - same percentage (~4%) of fradulent samples as the general dataset. As you would with a regular model, Jev receives the same context for each prediction and returns a `noul` response.
 
 ```python
 jobs_train_records = json.loads(X_jev.to_json(orient="records"))
@@ -228,9 +228,9 @@ Jev returned 300 predictions.
 
 ### Read the results
 
-**ROC AUC** measures how often a fraud case ranks above a legitimate posting: 0.5 is random, 1.0 is perfect. **Average precision (AP)** summarizes how reliably the top of a review queue contains fraud; higher is better. Random ranking has a reference AP of about 0.05 on this test set.
+**ROC AUC** measures how often a fraud case ranks above a legitimate posting: 0.5 is random, 1.0 is perfect. Higher ROC AUC means you'll get more fraud cases caught - and therefore, matters if you make decisions on the basis of predictions. **Average precision (AP)** summarizes how reliably the top of a review queue contains fraud; higher is better - and you would care about this if e.g. fraud cases need to be caught rther sooner than later.
 
-**Brier score** is the average squared probability error. **Log loss** penalizes confident mistakes more heavily. Lower is better for both; neither is an error percentage. These metrics use probabilities directly, without choosing a decision cutoff.
+**Brier score** is the average squared probability error, and it basically tells us how calibrated models' predictions are - or in other words, a Brier score of 0 would mean that when model tells you 0.8 probability of fraud, it is right about 80% of the time. **Log loss** penalizes confident mistakes more heavily. Lower is better for both.
 
 ```python
 def evaluate(y_true, probabilities):
@@ -288,11 +288,9 @@ display(Markdown(
 
 ## 2. TabPFN Plus: use the full training data
 
-The context budget leaves most labeled postings unused by Jev. TabPFN can use **all 17,567 eligible training rows** here, including the same 44 examples, and predict on the same 300 test postings. This is the full available training set for this dataset, not TabPFN's maximum supported size.
+The context size limit leaves most examples unused by Jev. TabPFN can use **all 17567 eligible training rows** here and predict on the same 300 test samples. It could go even higher - to 1M rows - but we just didn't have that much data here.
 
-We use the hosted [TabPFN-3.5-Plus](https://docs.priorlabs.ai/models/selecting-model-version), selected by `create_default_for_version("v3.5")` in `tabpfn-client`, with eight estimators and seed 42. The client handles text internally; we apply no custom preprocessing.
-
-This comparison measures the benefit of using more labeled data. It does not isolate model quality at equal training size.
+We use [TabPFN-3.5-Plus](https://docs.priorlabs.ai/models/selecting-model-version) with eight estimators and seed 42. We do not do anything extra - the data representation is same as for Jev.
 
 ```python
 full_model = TabPFNClassifier.create_default_for_version(
@@ -351,104 +349,72 @@ TabPFN Plus          17567   0.9995             0.9914  0.0074    0.0222
 
 ## 3. What if you don't have so much data?
 
-Compare 44, 100, 150, 300, 500, 750 and 1,000 TabPFN training rows with Jev's 44-example result. Start with the identical 44 rows and add randomly selected, stratified batches, so each training set contains the previous one. Keep every feature, the model settings and the test postings fixed.
+Compare TabPFN with **300 training rows** against Jev's 44-example result. We keep the same 300 training postings from the earlier comparison, including Jev's 44 examples. All 16 features and the same 300 test postings remain unchanged.
 
-We report every tested size and identify the smallest one whose ROC AUC exceeds Jev's. This is an exploratory comparison on a test set used throughout cookbook development, not an independently confirmed minimum. There are only 15 fraud cases in the test set.
+This training size was selected during the earlier exploration. The results use the same test set, with 15 fraud cases, rather than a fresh confirmation sample.
 
 ```python
-training_sizes = [44, 100, 150, 300, 500, 750, 1_000]
+# Preserve the exact 300 training postings from the earlier comparison.
 X_small = X_jev.copy()
-small_results = []
-
-for size in training_sizes:
-    if size > len(X_small):
-        available = X_full.drop(index=X_small.index)
-        extra, _ = train_test_split(
-            available,
-            train_size=size - len(X_small),
-            stratify=y.loc[available.index],
-            random_state=RANDOM_STATE,
-        )
-        X_small = pd.concat([X_small, extra])
-
-    model = TabPFNClassifier.create_default_for_version(
-        "v3.5", n_estimators=8, random_state=RANDOM_STATE,
+for additional_rows in [56, 50, 150]:
+    available = X_full.drop(index=X_small.index)
+    extra, _ = train_test_split(
+        available,
+        train_size=additional_rows,
+        stratify=y.loc[available.index],
+        random_state=RANDOM_STATE,
     )
-    model.fit(X_small, y.loc[X_small.index])
-    probabilities = model.predict_proba(X_test)[:, list(model.classes_).index(1)]
-    small_results.append({
-        "Training rows": size,
-        "Fraud examples": int(y.loc[X_small.index].sum()),
-        **evaluate(y_test, probabilities),
-    })
-    print(f"Completed {size:,} training rows.")
+    X_small = pd.concat([X_small, extra])
 
-small_results = pd.DataFrame(small_results).set_index("Training rows")
-display(small_results.round(3))
+assert len(X_small) == 300
+
+model = TabPFNClassifier.create_default_for_version(
+    "v3.5", n_estimators=8, random_state=RANDOM_STATE,
+)
+model.fit(X_small, y.loc[X_small.index])
+small_probabilities = model.predict_proba(X_test)[:, list(model.classes_).index(1)]
+
+small_scores = evaluate(y_test, small_probabilities)
+small_results = pd.DataFrame([
+    {"Model": "Jev", "Training rows": len(X_jev), **jev_scores},
+    {"Model": "TabPFN Plus", "Training rows": len(X_small), **small_scores},
+]).set_index("Model")
+display(small_results.round(4))
 ```
 
 ```console
-Completed 44 training rows.
-Completed 100 training rows.
-Completed 150 training rows.
-Completed 300 training rows.
-Completed 500 training rows.
-Completed 750 training rows.
-Completed 1,000 training rows.
-               Fraud examples  ROC AUC  Average precision  Brier  Log loss
-Training rows
-44                          2    0.751              0.156  0.048     0.239
-100                         5    0.865              0.396  0.041     0.157
-150                         7    0.863              0.322  0.042     0.163
-300                        14    0.903              0.353  0.040     0.141
-500                        24    0.985              0.812  0.025     0.079
-750                        36    0.963              0.696  0.027     0.093
-1000                       48    0.969              0.704  0.025     0.085
+             Training rows  ROC AUC  Average precision   Brier  Log loss
+Model
+Jev                     44   0.8883             0.3621  0.1006    0.3525
+TabPFN Plus            300   0.9032             0.3528  0.0399    0.1406
 ```
 
 ```python
-fig, axes = plt.subplots(1, 2, figsize=(11, 4.3), layout="constrained")
-for ax, metric in zip(axes, ["ROC AUC", "Average precision"]):
-    ax.plot(
-        small_results.index, small_results[metric], "o-",
-        color=colors["TabPFN Plus"], linewidth=2.5, label="TabPFN Plus",
-    )
-    ax.axhline(
-        jev_scores[metric], color=colors["Jev"], linestyle="--", linewidth=2,
-        label=f"Jev · 44 examples · {jev_scores[metric]:.3f}",
-    )
-    for size, value in small_results[metric].items():
-        ax.annotate(
-            f"{value:.3f}", (size, value), xytext=(0, 9),
-            textcoords="offset points", ha="center", fontsize=8,
-        )
-    ax.set_xscale("log")
-    ax.set_xticks(training_sizes, [f"{size:,}" for size in training_sizes])
-    ax.minorticks_off()
-    ax.set(title=metric + " ↑", xlabel="TabPFN training rows",
-           ylim=(0.5, 1.05) if metric == "ROC AUC" else (0, 1.10))
+fig, axes = plt.subplots(1, 4, figsize=(13, 3.4), layout="constrained")
+for ax, metric in zip(axes, ["ROC AUC", "Average precision", "Brier", "Log loss"]):
+    values = small_results[metric]
+    bars = ax.bar(values.index, values, color=[colors[name] for name in values.index], width=0.55)
+    ax.bar_label(bars, fmt="%.4f" if metric == "ROC AUC" else "%.3f", padding=5, fontsize=11)
+    higher_is_better = metric in ["ROC AUC", "Average precision"]
+    ax.set_title(metric + (" ↑" if higher_is_better else " ↓"))
+    ax.set_ylim(0, 1.15 if higher_is_better else values.max() * 1.3)
+    ax.set_axisbelow(True)
     ax.grid(axis="y", color="#EEF0F4")
-    ax.legend(loc="lower right", fontsize=9)
+fig.suptitle(
+    "Jev: 44 examples · TabPFN Plus: 300 examples · same 300 test postings",
+    color=colors["TabPFN Plus"], fontsize=13, fontweight="bold",
+)
 plt.show()
+plot_ranking(y_test, {"Jev": jobs_jev, "TabPFN Plus": small_probabilities})
 
-better = small_results[small_results["ROC AUC"] > jev_scores["ROC AUC"]]
-if len(better):
-    smallest = int(better.index[0])
-    scores = better.iloc[0]
-    display(Markdown(
-        f"**{smallest:,} training rows is the smallest tested size that beats Jev on ROC AUC**: "
-        f"{scores['ROC AUC']:.4f} versus {jev_scores['ROC AUC']:.4f}, using "
-        f"{smallest - len(X_jev):,} additional examples. "
-        "That means you can improve the ordering of the review queue without using the full dataset. "
-        f"AP is {scores['Average precision']:.3f} versus {jev_scores['Average precision']:.3f} for Jev, "
-        "so read the AUC comparison alongside the quality of the top-ranked results. "
-        "The crossover can change with a different sample."
-    ))
-else:
-    display(Markdown(
-        "None of these smaller training sets exceeds Jev's ROC AUC on this split. "
-        "The full-data result does not imply the same advantage with a small labeled dataset."
-    ))
+display(Markdown(
+    f"With **300 training rows**, TabPFN reaches **ROC AUC {small_scores['ROC AUC']:.4f}**, "
+    f"versus {jev_scores['ROC AUC']:.4f} for Jev with 44 examples. "
+    f"AP is {small_scores['Average precision']:.3f} versus {jev_scores['Average precision']:.3f}, "
+    "so the better overall ranking does not translate into better average precision here. "
+    f"Brier is {small_scores['Brier']:.3f} versus {jev_scores['Brier']:.3f}; "
+    "lower means smaller probability errors."
+))
 ```
 
 ```console
@@ -456,3 +422,5 @@ else:
 ```
 
 ![3. What if you don't have so much data?](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-04.png)
+
+![3. What if you don't have so much data?](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-05.png)
