@@ -475,7 +475,7 @@ display(Markdown(
 
 ![3. What if you don't have so much data?](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-05.png)
 
-## 4. Can you trust the probabilities?
+## 4. Can you trust Jev's probabilities?
 
 If postings receive a risk of about 80%, roughly 80% of them should be fraudulent. These [calibration plots](https://scikit-learn.org/stable/modules/calibration.html) compare each group's average predicted risk with its observed fraud rate.
 
@@ -498,7 +498,7 @@ TabPFN Plus · 400 rows                   4.8%                5.0%  0.026
 TabPFN Plus · 17,567 rows                4.4%                5.0%  0.007
 ```
 
-![4. Can you trust the probabilities?](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-06.png)
+![4. Can you trust Jev's probabilities?](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-06.png)
 
 **As we can see, Jev systematically overestimates risk** - mean predicted risk is 27.5%, while 5.0% of postings are fraudulent. Among the 21 postings it assigns 60–80% risk, only 4 are fraud. This basically means that if you were **using Jev for decision-making, the agent would ban more innocent posts than fradulent** - and we can predict (pun intended) that your users won't be happy about that.  
 
