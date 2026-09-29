@@ -458,13 +458,20 @@ risk_summary = pd.DataFrame([
      "Observed fraud rate": y_test.mean(), "Brier": brier_score_loss(y_test, probabilities)}
     for name, probabilities in calibration_predictions.items()
 ]).set_index("Model")
-display(risk_summary.style.format({
+risk_summary_display = risk_summary.copy()
+for column, format_string in {
     "Mean predicted risk": "{:.1%}", "Observed fraud rate": "{:.1%}", "Brier": "{:.3f}",
-}))
+}.items():
+    risk_summary_display[column] = risk_summary[column].map(format_string.format)
+display(risk_summary_display)
 ```
 
 ```console
-<pandas.io.formats.style.Styler at 0x11bea6270>
+                          Mean predicted risk Observed fraud rate  Brier
+Model
+Jev · 44 rows                           27.5%                5.0%  0.101
+TabPFN Plus · 400 rows                   4.8%                5.0%  0.026
+TabPFN Plus · 17,567 rows                4.4%                5.0%  0.007
 ```
 
 ![4. Can you trust the probabilities?](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-06.png)
