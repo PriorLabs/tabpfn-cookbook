@@ -54,7 +54,7 @@ import kagglehub
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from IPython.display import Markdown, display
+from IPython.display import display
 from kagglehub import KaggleDatasetAdapter
 from sklearn.metrics import (
     brier_score_loss,
@@ -343,21 +343,16 @@ print(f"Jev returned {len(jobs_jev)} predictions.")
 jev_scores = evaluate(y_test, jobs_jev)
 display(pd.DataFrame([{"Model": "Jev", "Training rows": 44, **jev_scores}]).round(4))
 plot_ranking(y_test, {"Jev": jobs_jev})
-display(Markdown(
-    f"Jev reaches **ROC AUC {jev_scores['ROC AUC']:.4f}** from 44 examples. "
-    "It ranks fraud above legitimate postings better than random. "
-    f"Its Brier score is {jev_scores['Brier']:.3f}; the calibration plots below "
-    "check whether its probability values match the observed fraud rates."
-))
 ```
 
 ```console
   Model  Training rows  ROC AUC   Brier
 0   Jev             44   0.8883  0.1006
-<IPython.core.display.Markdown object>
 ```
 
 ![1. Jev](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-01.png)
+
+Jev reaches **ROC AUC 0.8883** from 44 examples. It ranks fraud above legitimate postings better than random. Its Brier score is 0.101; the calibration plots below check whether its probability values match the observed fraud rates.
 
 ## 2. TabPFN-3.5-Plus
 
@@ -394,13 +389,6 @@ plot_metric_comparison(
     f"Jev: 44 examples · TabPFN Plus: {len(X_full):,} examples · same 300 test postings",
 )
 plot_ranking(y_test, {"Jev": jobs_jev, "TabPFN Plus": full_probabilities})
-
-display(Markdown(
-    f"With all available training data, TabPFN reaches **ROC AUC {full_scores['ROC AUC']:.4f}**, "
-    f"compared with {jev_scores['ROC AUC']:.4f} for Jev. "
-    f"Brier is {full_scores['Brier']:.3f} versus {jev_scores['Brier']:.3f}; "
-    "lower means smaller probability errors across the test postings."
-))
 ```
 
 ```console
@@ -408,12 +396,13 @@ display(Markdown(
 Model
 Jev                     44   0.8883  0.1006
 TabPFN Plus          17567   0.9995  0.0074
-<IPython.core.display.Markdown object>
 ```
 
 ![2. TabPFN-3.5-Plus](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-02.png)
 
 ![2. TabPFN-3.5-Plus](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-03.png)
+
+With all available training data, TabPFN reaches **ROC AUC 0.9995**, compared with 0.8883 for Jev. Brier is 0.007 versus 0.101; lower means smaller probability errors across the test postings.
 
 ## 3. What if you don't have so much data?
 
@@ -458,22 +447,13 @@ plot_metric_comparison(
     "Jev: 44 examples · TabPFN Plus: 400 examples · same 300 test postings",
 )
 plot_ranking(y_test, {"Jev": jobs_jev, "TabPFN Plus": small_probabilities})
-
-display(Markdown(
-    f"With **400 training rows**, TabPFN reaches **ROC AUC {small_scores['ROC AUC']:.4f}**, "
-    f"versus {jev_scores['ROC AUC']:.4f} for Jev with 44 examples. "
-    f"Brier is {small_scores['Brier']:.3f} versus {jev_scores['Brier']:.3f}; "
-    "lower means smaller probability errors."
-))
-```
-
-```console
-<IPython.core.display.Markdown object>
 ```
 
 ![3. What if you don't have so much data?](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-04.png)
 
 ![3. What if you don't have so much data?](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn-vs-jev/plot-05.png)
+
+With **400 training rows**, TabPFN reaches **ROC AUC 0.9485**, versus 0.8883 for Jev with 44 examples. Brier is 0.026 versus 0.101; lower means smaller probability errors.
 
 ## 4. Can you trust Jev's probabilities?
 
