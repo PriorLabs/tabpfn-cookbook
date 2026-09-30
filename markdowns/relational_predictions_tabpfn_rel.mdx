@@ -90,7 +90,7 @@ The `api` extra runs featurization locally and uses the hosted TabPFN API for
 model fitting and prediction. No local GPU is needed.
 
 ```python
-!pip install -q "tabpfn-rel[api]==0.0.3"
+!pip install -q "tabpfn-rel[api]==0.0.5"
 !pip install -q kagglehub
 
 import importlib.metadata
@@ -411,10 +411,12 @@ them back.
 
 ## Fit and predict
 
-`TabPFNRel(model="client")` uses hosted inference. Its `fit()` method accepts a
+`TabPFNRel(model="client")` uses hosted TabPFN 3.5 inference. Its `fit()` method accepts a
 training context, and `predict()` accepts a query with explicit entities and a
 timestamp. Use `model="local"` with the local package extra for local inference.
-`n_trials=0` fits the default configuration without hyperparameter tuning.
+`"client"` and `"local"` always select the latest recipe. To pin a recipe, pass
+its dated selector, such as `model="client-2026-09-28"`. The current recipes run
+one validated configuration, so `n_trials=0` is all they need.
 
 For this historical evaluation, select sellers with observed test-window labels.
 Only their IDs enter the prediction query; their outcomes are used for evaluation.
@@ -450,7 +452,7 @@ are computed and stored as the query runs; later identical operations reuse
 them. Nothing in the cache is uploaded.
 
 This can be helpful in many scenarios, like:
-- You might want to play with different levels of tuning, e.g. `n_trials=1` and `n_trials=3`. Caching is independent of tuning so you can reuse the relational features. Note that for `n_trials=0` we don't need to compute the cache for the inner split we tune, so going from `n_trials=0` to `n_trials>0` will still require some extra cache computation.
+- You might want to refit on the same database later, for example after a runtime restart with the cache on a mounted drive. The refit reuses the stored features.
 - If you use the local version of `tabpfn-rel`, then you might want to run the cache pre-computation on a beefy CPU node for large datasets, while running the actual predictions of `tabpfn-rel` using a good GPU.
 
 `data_version` identifies the exact database snapshot behind the cache keys.
@@ -477,7 +479,7 @@ context = PredictiveContext(spec, data_version="olist-kaggle-v1")
 started = time.perf_counter()
 model.fit(
     context,
-    n_trials=1,
+    n_trials=0,
     seed=0,
     cache_dir=CACHE_DIR,
 )
@@ -488,21 +490,21 @@ print(f"Initial fit complete!")
 started_cached = time.perf_counter()
 model.fit(
     context,
-    n_trials=3,
+    n_trials=0,
     seed=0,
     cache_dir=CACHE_DIR,
 )
 fit_cached_seconds = time.perf_counter() - started_cached
 
-print(f"Second fit with more tuning complete!")
+print(f"Second fit complete!")
 
 print(f"Fit: {fit_seconds:.1f} s")
 print(f"Fit Cached: {fit_cached_seconds:.1f} s")
 print(f"Cache directory: {CACHE_DIR.resolve()}")
 ```
 
-The second fit can reuse features from the first fit. Its total runtime also
-depends on the configurations selected by the larger tuning budget.
+The second fit reuses the features from the first fit, so its runtime is
+mostly model fitting.
 
 Caching also works for `predict()`, as you can see in the cell below:
 
@@ -558,7 +560,7 @@ package and calls `discover_models()` to register its models in this running
 notebook. The earlier TabPFN-Rel sections do not require it.
 
 ```python
-!pip install -q "relarena==0.1.1"
+!pip install -q "relarena==0.1.3"
 
 from relarena_core import discover_models
 
@@ -622,7 +624,7 @@ Dummy per entity         0.688
 Dummy                    0.500
 ```
 
-We observe that TabPFN-Rel improves significantly over the baseline. Depending on the dataset, tuning (e.g. `n_trials=3`) can give another nice boost.
+We observe that TabPFN-Rel improves significantly over the baseline.
 
 ## Where to go next
 
