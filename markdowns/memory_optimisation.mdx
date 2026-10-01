@@ -48,7 +48,7 @@ Everything below runs on a single Colab **T4 (16 GB)**.
 *Install, import, and authenticate.*
 
 ```python
-!pip install -q tabpfn scikit-learn tabpfn-client
+!pip install -q tabpfn scikit-learn tabpfn-client matplotlib numpy torch
 ```
 
 ```python
@@ -220,7 +220,7 @@ Chunked Prediction: peak VRAM = 2.70 GB
 
 *Peak VRAM for each lever, against the T4 ceiling.*
 
-Peak GPU VRAM for each approach. The naive run never finished; each lever on its own keeps us under the T4's 16 GB ceiling.
+Peak GPU VRAM for each approach. The naive run completed at 3.56 GB; subsampling and chunking reduced peak memory further, with all measured runs below the T4's 16 GB ceiling.
 
 ```python
 labels = list(PEAK_VRAM)
