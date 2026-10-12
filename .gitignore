@@ -15,7 +15,5 @@ relarena-cache/
 .rerun/
 # Written by generate_synthetic_data.ipynb when it runs
 notebooks/synthetic.csv
-# Downloaded teaching panel; recreated from the pinned public dataset snapshot.
-notebooks/favorita_daily.csv
 # Resumable execution artifacts and private run provenance.
 .benchmark-results/

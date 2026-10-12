@@ -99,7 +99,7 @@ _manifest = {
     'origins': [str(x.date()) for x in TEST_ORIGINS], 'horizons': H,
     'fits': len(timings), 'code_sha256': EXECUTION_CODE_HASH,
     'ensemble_members': sorted(timings.ensemble_members.unique().astype(int).tolist()),
-    'data_sha256': _hashlib.sha256(Path('favorita_daily.csv').read_bytes()).hexdigest(),
+    'data_sha256': _hashlib.sha256(panel_path.read_bytes()).hexdigest(),
 }
 (_artifacts / 'execution.json').write_text(_json.dumps(_manifest, indent=2))
 print(_json.dumps(_manifest, indent=2))

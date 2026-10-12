@@ -38,7 +38,7 @@ We build ordinary date features before adding Fourier terms, introduce a two-day
 ## Setup
 
 ```python
-%pip install -q --upgrade "tabpfn>=9.0" pandas matplotlib huggingface-hub
+%pip install -q "tabpfn==9.1.0" "torch==2.14.1" "numpy==2.4.6" "pandas==3.0.6" "scikit-learn==1.9.1" "matplotlib==3.11.2"
 ```
 
 ```python
@@ -49,7 +49,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from IPython.display import display
-from huggingface_hub import hf_hub_download
+import hashlib
+from urllib.request import urlretrieve
 
 plt.style.use("seaborn-v0_8-whitegrid")
 pd.set_option("display.max_columns", 12)
@@ -59,7 +60,7 @@ COLORS = {"Basic dates": "#8C8C8C", "Fourier": "#E88B32", "Direct AR": "#2878B5"
 ```
 
 ## Load a panel of related series
-We use [Favorita Store Sales](https://www.kaggle.com/competitions/store-sales-time-series-forecasting/data), accessed through a [public mirror](https://huggingface.co/datasets/t4tiana/store-sales-time-series-forecasting). The snapshot is fixed for reproducibility. Sales are quantities, not revenue; some families include quantities measured by weight.
+We use [Favorita Store Sales](https://www.kaggle.com/competitions/store-sales-time-series-forecasting/data), accessed through a [public mirror](https://huggingface.co/datasets/t4tiana/store-sales-time-series-forecasting). The prepared teaching panel is included in this repository; its source snapshot and checksum are fixed for reproducibility. Sales are quantities, not revenue; some families include quantities measured by weight.
 
 The subset is fixed before evaluating forecasts: stores 1–12 and BEVERAGES, BREAD/BAKERY, CLEANING, and GROCERY I. These **48 store–family series** form four groups of 12. We retain roughly two years of training history plus earlier observations for lag construction. This is a teaching subset, not a benchmark of the full competition.
 
@@ -68,37 +69,15 @@ Holiday features respect city/state/national scope and transferred dates. Future
 ```python
 STORES = list(range(1, 13))
 FAMILIES = ["BEVERAGES", "BREAD/BAKERY", "CLEANING", "GROCERY I"]
-DATASET = "t4tiana/store-sales-time-series-forecasting"
-REVISION = "1ac138dfdfafc520bc29831e73373954b1b7bc05"
-panel_path = Path("favorita_daily.csv")
-
+panel_path = Path("../datasets/forecast_hierarchical_series/favorita_daily.csv")
 if not panel_path.exists():
-    def source_file(name):
-        return hf_hub_download(DATASET, name, repo_type="dataset", revision=REVISION)
-
-    chunks = pd.read_csv(source_file("train.csv"), parse_dates=["date"], chunksize=250_000)
-    selected = []
-    for chunk in chunks:
-        keep = (chunk.store_nbr.isin(STORES) & chunk.family.isin(FAMILIES)
-                & chunk.date.ge("2015-04-01"))
-        selected.append(chunk.loc[keep, ["date", "store_nbr", "family", "sales", "onpromotion"]])
-    panel = pd.concat(selected, ignore_index=True)
-    stores = pd.read_csv(source_file("stores.csv"))
-    panel = panel.merge(stores[["store_nbr", "city", "state", "type", "cluster"]],
-                        on="store_nbr", validate="many_to_one")
-    holidays = pd.read_csv(source_file("holidays_events.csv"), parse_dates=["date"])
-    holidays = holidays.loc[~holidays.transferred & holidays.type.isin(
-        ["Holiday", "Additional", "Bridge", "Transfer"])]
-    panel["is_holiday"] = 0
-    for holiday in holidays.itertuples():
-        applies = panel.date.eq(holiday.date)
-        if holiday.locale == "Regional":
-            applies &= panel.state.eq(holiday.locale_name)
-        elif holiday.locale == "Local":
-            applies &= panel.city.eq(holiday.locale_name)
-        panel.loc[applies, "is_holiday"] = 1
-    panel["series_id"] = panel.store_nbr.astype(str) + " / " + panel.family
-    panel.sort_values(["series_id", "date"]).to_csv(panel_path, index=False)
+    # Colab can open a notebook without cloning its adjacent datasets directory.
+    panel_path.parent.mkdir(parents=True, exist_ok=True)
+    urlretrieve(
+        "https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/7c31063f93d6473e579c9c22e04127c9fefe1ef2/"
+        "datasets/forecast_hierarchical_series/favorita_daily.csv", panel_path)
+expected_checksum = "fe76588a94953b61aa8a2285331bdea5fb513a2f8610c1a6e39ea7b42f3bb242"
+assert hashlib.sha256(panel_path.read_bytes()).hexdigest() == expected_checksum
 
 panel = pd.read_csv(panel_path, parse_dates=["date"])
 assert not panel.duplicated(["series_id", "date"]).any()

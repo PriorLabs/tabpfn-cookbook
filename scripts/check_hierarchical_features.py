@@ -1,5 +1,8 @@
 """Worker-side tests of the notebook's date and horizon alignment."""
 import ast
+import hashlib
+import shutil
+import tempfile
 import json
 import os
 from pathlib import Path
@@ -14,7 +17,31 @@ os.chdir(root/'notebooks')
 ns={'Path':Path, 'pd':pd, 'np':np, 'display':lambda *a:None,
     'H':14,'HISTORY_DAYS':730,'DEMO_ORIGIN':pd.Timestamp('2017-05-31'),
     'EXAMPLES':['1 / BEVERAGES','2 / BEVERAGES']}
-ns['panel']=pd.read_csv('favorita_daily.csv',parse_dates=['date'])
+# Exercise the notebook loader from a checkout, then from a standalone notebook.
+panel_path = root/'datasets/forecast_hierarchical_series/favorita_daily.csv'
+loader = next(c['source'] for c in notebook['cells']
+              if 'data-preparation' in c['metadata'].get('tags', []))
+ns['hashlib'] = hashlib
+
+def unexpected_download(*args):
+    raise AssertionError('A checkout must load its committed dataset without downloading')
+
+ns['urlretrieve'] = unexpected_download
+exec(loader, ns)
+checkout_panel = ns['panel'].copy()
+with tempfile.TemporaryDirectory() as directory:
+    standalone = Path(directory)/'notebooks'
+    standalone.mkdir()
+    os.chdir(standalone)
+    def download_panel(url, destination):
+        assert url.startswith('https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/')
+        assert url.endswith('/datasets/forecast_hierarchical_series/favorita_daily.csv')
+        shutil.copyfile(panel_path, destination)
+    ns['urlretrieve'] = download_panel
+    exec(loader, ns)
+    pd.testing.assert_frame_equal(ns['panel'], checkout_panel)
+os.chdir(root/'notebooks')
+print('PASS: checkout and standalone loaders produce the identical checksummed teaching panel.')
 for prefix, until in [('IDENTIFIERS =',None),('FOURIER =','example_rows ='),('AR_COLUMNS =','h2_rows =')]:
     cell=next(c for c in notebook['cells'] if c['cell_type']=='code' and c['source'].startswith(prefix))
     exec(cell['source'].split(until)[0] if until else cell['source'],ns)

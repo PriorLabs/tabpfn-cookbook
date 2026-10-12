@@ -39,4 +39,3 @@ if not panel_path.exists():
         panel.loc[applies, "is_holiday"] = 1
     panel["series_id"] = panel.store_nbr.astype(str) + " / " + panel.family
     panel.sort_values(["series_id", "date"]).to_csv(panel_path, index=False)
-
