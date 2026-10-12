@@ -36,7 +36,6 @@ A grocery retailer needs tomorrow's replenishment plan for many stores and produ
 We build ordinary date features before adding Fourier terms, introduce a two-day-ahead autoregressive forecast, and extend it to a separate model for each of 14 horizons. Finally, we compare one context per series, one per product family, one per store, and one global context. The results determine whether pooling improves accuracy, runtime, or both.
 
 ## Setup
-Use a GPU runtime. We explicitly select the standard TabPFN 3.5 regressor and otherwise retain its modeling defaults. The first run downloads the public dataset and model; later runs reuse their caches.
 
 ```python
 %pip install -q --upgrade "tabpfn>=9.0" pandas matplotlib huggingface-hub
@@ -122,9 +121,7 @@ display(panel.loc[panel.series_id.isin(["5 / CLEANING", "9 / GROCERY I"]),
 ```
 
 ## Two series and a forecast origin
-The walkthrough follows **CLEANING in store 5** and **GROCERY I in store 9**. These two illustrations were selected from the 48 series on the **May 31, 2017 development window**, where adding Fourier terms helps. They illustrate a useful technique, not a representative average gain. The larger comparison retains **all 48 series** and uses three later, non-overlapping 14-day forecast windows.
-
-At an origin $t$, sales through $t$ are observed. Dates, calendar features, and planned promotions for $t+1$ through $t+14$ are available. Sales in that window are labels used only for scoring.
+We pick two series as an example. At an origin $t$, sales through $t$ are observed. Dates, calendar features, and planned promotions for $t+1$ through $t+14$ are available. Sales in that window are labels used only for scoring.
 
 ```python
 H = 14
@@ -151,9 +148,7 @@ plt.show()
 ![Two series and a forecast origin](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/forecast_hierarchical_series/plot-01.png)
 
 ## Start with ordinary date features
-A date becomes **year, month, day of month, weekday, and a time index**. Add the same known covariates and static identifiers that we will keep in later models. There are no lagged sales or target-derived averages here.
-
-Integer dates provide a useful baseline, but do not explicitly encode cyclic proximity: Sunday (6) and Monday (0) are adjacent even though their codes are far apart. TabPFN can still learn calendar patterns, so improvement from Fourier features must be measured.
+A date becomes **year, month, day of month, weekday, and a time index**. Add the same known covariates and static identifiers that we will keep in later models.
 
 ```python
 IDENTIFIERS = ["store_nbr", "family", "city", "state", "type", "cluster"]
@@ -256,13 +251,21 @@ basic_predictions, basic_timing = calendar_forecast(
 basic_predictions["method"] = "Basic dates"
 display(basic_predictions[["series_id", "date", "sales", "prediction"]].groupby("series_id").head(3))
 print("Basic-date MAE:", round(abs(basic_predictions.sales - basic_predictions.prediction).mean(), 2))
-fig, axes = plt.subplots(2, 1, figsize=(11, 4.5), sharex=True)
+def plot_history(ax, series):
+    history = demo.loc[demo.series_id.eq(series) & demo.date.between(
+        DEMO_ORIGIN - pd.Timedelta(days=28), DEMO_ORIGIN)]
+    ax.plot(history.date, history.sales, "-", color="#2878B5", label="Observed history")
+    ax.axvline(DEMO_ORIGIN, color="black", linestyle=":", label="Forecast origin")
+    ax.axvspan(DEMO_ORIGIN, DEMO_ORIGIN + pd.Timedelta(days=H), color="#E88B32", alpha=.08)
+
+fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
 for ax, series in zip(axes, EXAMPLES):
+    plot_history(ax, series)
     rows = basic_predictions.loc[basic_predictions.series_id.eq(series)]
     ax.plot(rows.date, rows.sales, "o-", color="black", label="Actual")
     ax.plot(rows.date, rows.prediction, "o--", color=COLORS["Basic dates"], label="Basic dates + covariates")
     ax.set(title=series, ylabel="Sales quantity")
-axes[0].legend(ncol=2)
+axes[0].legend(ncol=4, loc="lower left", bbox_to_anchor=(0, 1.14), fontsize=8)
 fig.autofmt_xdate()
 fig.tight_layout()
 plt.show()
@@ -284,7 +287,7 @@ Basic-date MAE: 251.02
 ## Add Fourier terms to describe repeating seasons
 For each period $P$, add $\sin(2\pi k d/P)$ and $\cos(2\pi k d/P)$. We use two harmonics for the weekly and annual cycles: **eight extra columns**. These depend only on the target date and remain available at any forecast horizon.
 
-Everything else stays the same, including promotions, training dates, model settings, and held-out targets. This is an ablation of the date representation, not a change of forecasting model.
+Everything else stays the same, including promotions, training dates, model settings, and held-out targets.
 
 ```python
 FOURIER = []
@@ -340,15 +343,16 @@ date_comparison = pd.concat([basic_predictions, fourier_predictions], ignore_ind
 date_comparison["absolute_error"] = abs(date_comparison.sales - date_comparison.prediction)
 display(date_comparison.groupby(["series_id", "method"]).absolute_error.mean().unstack())
 
-fig, axes = plt.subplots(2, 1, figsize=(11, 5), sharex=True)
+fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
 for ax, series in zip(axes, EXAMPLES):
+    plot_history(ax, series)
     rows = date_comparison.loc[date_comparison.series_id.eq(series)]
     actual = rows.drop_duplicates("date")
     ax.plot(actual.date, actual.sales, "o-", color="black", label="Actual")
     for method, group in rows.groupby("method"):
         ax.plot(group.date, group.prediction, "o--", color=COLORS[method], label=method)
     ax.set(title=series, ylabel="Sales quantity")
-axes[0].legend(ncol=3)
+axes[0].legend(ncol=5, loc="lower left", bbox_to_anchor=(0, 1.14), fontsize=8)
 fig.autofmt_xdate()
 fig.tight_layout()
 plt.show()
@@ -363,29 +367,38 @@ series_id
 
 ![Add Fourier terms to describe repeating seasons](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/forecast_hierarchical_series/plot-04.png)
 
-In these two development illustrations, adding Fourier terms reduces MAE from **86.5 to 74.9** for store 5 / CLEANING and from **415.6 to 359.8** for store 9 / GROCERY I: about **13.4% lower in each series**. Some peaks remain underestimated. These examples show a possible improvement; the later test checks every series, including cases where the representation may hurt.
+Adding Fourier terms reduces MAE for both illustrated series. Some peaks remain underestimated.
 
 ## Add observed history to predict two days ahead
 A supervised row now has two dates: **origin** and **target date**. At origin $t$, `last_sales` is $y_t$; `sales_7d_ago` is $y_{t-7}$; the trailing means end at $t$. Promotions, Fourier terms, and calendar features belong to the **target date $t+2$**.
 
-The training label is $y_{t+2}$. We only fit on rows whose label date is at or before the current cutoff. Shifting features alone is not enough to enforce that rule.
+The training label is $y_{t+2}$. A training row is eligible only when its label date is at or before the current forecast cutoff.
+
+The helper also removes rows with incomplete sales history from both training data and forecast queries. All 48 series have the required history at the evaluation origins used here, but a series with incomplete recent history would be omitted by this helper. When adapting the example, check that every requested series and horizon has a prediction, and choose an explicit missing-history policy before using the forecasts.
 
 ```python
-# A diagram of information flow: history stays on the observed side of the cutoff.
-fig, ax = plt.subplots(figsize=(11, 2.8))
-ax.set_xlim(-8, 5)
-ax.set_ylim(-1.1, 1.6)
-ax.axvline(0, color="black", linestyle="--")
+# History stays on the observed side of the forecast origin.
+fig, ax = plt.subplots(figsize=(12, 3.2))
+ax.set_xlim(-8, 4.5)
+ax.set_ylim(-1.2, 1.9)
+ax.axvline(0, ymin=.2, ymax=.95, color="black", linestyle="--")
 ax.annotate("", xy=(4, 0), xytext=(-7.5, 0), arrowprops={"arrowstyle": "->", "color": "gray"})
-for x, label in [(-7, "t−7"), (-1, "t−1"), (0, "t"), (2, "t+2")]:
-    ax.scatter(x, 0, color="#2878B5" if x <= 0 else "#E88B32", s=65)
-    ax.text(x, -.3, label, ha="center")
-ax.text(-3.8, .8, "Observed sales → lags and trailing means", ha="center", color="#2878B5")
-ax.text(2.1, 1.25, "Known target-date\npromotions + calendar", ha="center", color="#A85B15")
-ax.annotate("Predict sales", xy=(2, .05), xytext=(-2.2, .35),
-            arrowprops={"arrowstyle": "->", "color": "#2878B5"})
-ax.text(0, -.8, "Forecast origin: last observed day", ha="center")
+for day in range(-7, 1):
+    ax.scatter(day, 0, color="#2878B5", s=65, zorder=3)
+    if day < 0:
+        ax.text(day, -.3, f"t−{abs(day)}", ha="center")
+ax.scatter(1, 0, facecolors="white", edgecolors="#2878B5", linewidths=1.7, s=65, zorder=3)
+ax.text(1, -.3, "t+1", ha="center")
+ax.text(1, -.65, "Not yet observed", ha="center", fontsize=9, color="#2878B5")
+ax.scatter(2, 0, color="#E88B32", s=65, zorder=3)
+ax.text(2, -.3, "t+2", ha="center")
+ax.annotate("Predicted sales", xy=(2, .08), xytext=(2, .6), ha="center",
+            color="#A85B15", arrowprops={"arrowstyle": "->", "color": "#E88B32"})
+ax.text(-3.8, 1.25, "Observed sales → lags and trailing means", ha="center", color="#2878B5")
+ax.text(2, 1.25, "Known target-date\npromotions + calendar", ha="center", color="#A85B15")
+ax.text(0, -1.05, "Forecast origin: last observed day", ha="center")
 ax.axis("off")
+fig.tight_layout()
 plt.show()
 ```
 
@@ -440,9 +453,14 @@ display(h2_predictions[["series_id", "origin", "date", "horizon", "sales", "pred
 ```
 
 ## Forecast all 14 horizons directly
-Repeat the same construction for $h=1,\ldots,14$. Each horizon gets its own fit, with its own label alignment. All query rows use the **same sales history through the forecast origin**, while target-date covariates change with $h$.
 
-The $h=2$ model is exactly the example above. No forecast is inserted into another horizon's history. For our two illustrated series this requires **2 × 14 = 28 fits**, compared with **2 fits** for either calendar-only method.
+The two-day-ahead model above is already a **direct forecast**: it maps observed history at origin $t$ and known target-date covariates to sales at $t+2$. We now repeat that construction for every horizon $h=1,\ldots,14$.
+
+The distinction is between **origin-relative** and **target-relative** lags. Sales two days before the origin, $y_{t-2}$, are known for every forecast horizon. A two-day lag relative to the target $t+h$ would instead be $y_{t+h-2}$; for $h=3$, that requires $y_{t+1}$, which is not yet observed. Our features are origin-relative, so the same observed sales history is available for all 14 horizons.
+
+This implementation fits a separate model for each horizon. Historical rows pair history at an origin with the label $h$ days later, and only labels observed by the current cutoff enter training. Query rows share the history through $t$, while their target-date calendar and promotion features change with $h$. No predicted sales are fed into another horizon's history. Separate fits are a modeling choice, not a requirement imposed by lag features; the existing $h=2$ fit is reused.
+
+For our two illustrated series this requires **2 × 14 = 28 fits**, compared with **2 fits** for either calendar-only method.
 
 ```python
 # Show how the same history pairs with three different future dates and labels.
@@ -466,15 +484,16 @@ for h in range(1, H + 1):
 direct_predictions = pd.concat(direct_parts, ignore_index=True)
 direct_predictions["method"] = "Direct AR"
 
-fig, axes = plt.subplots(2, 1, figsize=(11, 5), sharex=True)
+fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
 for ax, series in zip(axes, EXAMPLES):
+    plot_history(ax, series)
     rows = direct_predictions.loc[direct_predictions.series_id.eq(series)].sort_values("date")
     ax.plot(rows.date, rows.sales, "o-", color="black", label="Actual")
     ax.plot(rows.date, rows.prediction, "o--", color=COLORS["Direct AR"], label="Direct AR")
     baseline = fourier_predictions.loc[fourier_predictions.series_id.eq(series)]
     ax.plot(baseline.date, baseline.prediction, "--", color=COLORS["Fourier"], label="Fourier, no AR")
     ax.set(title=series, ylabel="Sales quantity")
-axes[0].legend(ncol=3)
+axes[0].legend(ncol=5, loc="lower left", bbox_to_anchor=(0, 1.14), fontsize=8)
 fig.autofmt_xdate()
 fig.tight_layout()
 plt.show()
@@ -493,7 +512,10 @@ plt.show()
 ![Forecast all 14 horizons directly](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/forecast_hierarchical_series/plot-06.png)
 
 ## Share the context across related series
-The next step changes which **rows** TabPFN sees, not the forecast target. Each query still predicts one store–family series. Identifiers remain features so a shared model can distinguish stores and families.
+
+Pooling related series lets TabPFN learn from their shared patterns.
+
+This changes which **rows** TabPFN sees, not the forecast target. Each query still predicts one store–family series. Identifiers remain features so a shared model can distinguish stores and families.
 
 * **Per series:** each context contains one store–family history.
 * **By family:** each context contains 12 stores selling the same family.
@@ -553,16 +575,12 @@ Counts below are **per forecast origin**. “Fit” means one scikit-learn `fit`
 | By store | $L$ = **12** | $L$ = **12** | $L$ = **12** | $L H$ = **168** |
 | Global | **1** | **1** | **1** | $H$ = **14** |
 
-Here $S=48$, $G=4$ families, $L=12$ stores, and $H=14$. Across three test origins, each no-AR method needs **195 fits** across all pooling strategies; direct AR needs **2,730 fits**. The main comparison therefore needs **3,120 fits**. The $h=2$ results are reused from direct AR, not fitted again. The two-series walkthrough adds **32 fits**, plus one excluded warm-up.
-
-Fewer fits do not guarantee lower latency: the global context contains about 35,000 training rows. We measure fit plus prediction time and peak allocated GPU memory, and use the same historical window for every strategy.
+Here $S=48$ series, $G=4$ families, $L=12$ stores, and $H=14$. Across three test origins, each no-AR method needs **195 fits** across all pooling strategies; direct AR needs **2,730 fits**. The main comparison therefore needs **3,120 fits**. The $h=2$ results are reused from direct AR, not fitted again. The two-series walkthrough adds **32 fits**, plus one excluded warm-up.
 
 ## Evaluate three future windows
-Use the origins June 30, July 14, and July 28, 2017. Each forecast covers the next 14 days without observing any sales inside that window. At the next origin, previously observed sales may enter history. These are expanding-information backtests with a fixed 730-day training window, not rolling one-day predictions disguised as multi-step forecasts.
+Use the origins June 30, July 14, and July 28, 2017. Each forecast covers the next 14 days without observing any sales inside that window. At the next origin, previously observed sales may enter history. Each backtest uses a fixed 730-day training window and keeps the forecast origin unchanged throughout the forecast window.
 
 The primary score is **mean per-series seasonal MASE**: absolute forecast errors are divided by each series' training-only mean absolute seven-day difference, then averaged equally across series and origins. Zero-denominator series are reported and excluded from scaled scores for every method. We also report average within-series rank and the fraction of series won. Weekly seasonal-naive repeats the last observed week as a reference.
-
-Model settings are untuned. Calendar encodings and the two illustrations were checked on the earlier development window; no series is selected using the test results. All 48 series, three feature approaches, and four pooling strategies remain in the test comparison, including regressions.
 
 ```python
 STRATEGIES = ["Per series", "By family", "By store", "Global"]
@@ -777,11 +795,11 @@ Name: MASE at t+2, dtype: float64
 
 ![Compare pooling within each feature method](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/forecast_hierarchical_series/plot-09.png)
 
-Global direct AR has the lowest test MASE: **0.500**, versus **0.530** for per-series direct AR (**5.7% lower**). Its total fit-and-predict time falls from **26.6 to 20.9 minutes**. Fourier features improve mean test MASE for all four pooling strategies, although the two development illustrations were deliberately selected to make that effect visible.
+Global direct AR has the lowest test MASE and takes less model time than per-series direct AR. Fourier features improve mean test MASE across the pooling strategies. The illustrated series were selected on an earlier development window to show this improvement; the test comparison includes the full panel.
 
-Family pooling is particularly useful for the simple Fourier model: **0.503 MASE in 1.1 minutes**, compared with **0.500 in 20.9 minutes** for global direct AR. That is only **0.6% higher error** with roughly **19× less fit-and-predict time** across the three test origins.
+Family pooling is particularly useful for the Fourier model: its accuracy is close to global direct AR, with much less fit-and-predict time.
 
-Store pooling is also viable: direct AR improves from **0.530 to 0.525 MASE** while reducing model time from **26.6 to 15.6 minutes** relative to per-series fits. It is not the most accurate grouping here. Global pooling improves direct AR, but hurts the two non-autoregressive methods; the choice of features and pooling level should be validated together.
+Store pooling also improves direct AR accuracy and reduces model time relative to per-series fits. Global pooling improves direct AR but hurts the non-autoregressive methods, so validate the feature representation and pooling level together.
 
 ## Apply the pattern to your own panel
 Start with a long table containing a series identifier, a date, a target, and known covariates. Make the forecast origin explicit before building any target-derived feature. Use target-date calendar and planned covariates, and origin-date history.
