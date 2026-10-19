@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.metadata
 import json
 import statistics
@@ -18,6 +19,7 @@ import numpy as np
 import torch
 from botorch.test_functions import Hartmann
 from tabpfn import TabPFNRegressor
+from tabpfn.inference import _batch_member_inputs
 from tabpfn.settings import settings
 from tabpfn_extensions.bayesian_optimization.bo import _aligned, _ei_no_grad
 
@@ -216,12 +218,8 @@ def merge(calls: list[Forward]) -> Forward:
         # concatenate consumes its input caches; preserve the sequential reference.
         caches = [deepcopy(call.kwargs["kv_cache"]) for call in calls]
         kwargs["kv_cache"] = type(caches[0]).concatenate(caches)
-    return Forward(
-        first.model,
-        torch.cat([c.x for c in calls], dim=1),
-        torch.cat([c.y for c in calls], dim=1),
-        kwargs,
-    )
+    x, y = _batch_member_inputs([c.x for c in calls], [c.y for c in calls])
+    return Forward(first.model, x, y, kwargs)
 
 
 def run_forwards(calls: list[Forward]) -> list[torch.Tensor]:
@@ -414,6 +412,7 @@ def main() -> None:
         model_seed=0,
         n_estimators=8,
         repeats=args.repeats,
+        script_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
     )
     sections = {
         "cache": cache_and_ensemble,
