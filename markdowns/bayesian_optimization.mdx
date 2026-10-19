@@ -39,6 +39,8 @@ This cookbook turns the `tabpfn-extensions` Bayesian optimization example into a
 
 A single run tells you very little — the starting design alone can decide the outcome. So we repeat the whole experiment **5 times** with different initial designs and report the mean with a min–max band.
 
+This is a toy example. Michalewicz-2 is a cheap synthetic function in two dimensions, and 5 repeats of 50 evaluations is a small budget. The notebook shows how to put TabPFN into a Bayesian optimization loop; it is not a benchmark, and it is not representative of many real-world or higher-dimensional BO problems. Which method wins depends on the function and its dimension: in our larger benchmark the GP was ahead early on smoother problems such as Hartmann-6.
+
 Relevant resources:
 
 - [`tabpfn-extensions` repository](https://github.com/PriorLabs/tabpfn-extensions)
