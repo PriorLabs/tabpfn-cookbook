@@ -91,7 +91,7 @@ model fitting and prediction. No local GPU is needed.
 
 ```python
 # The packages declare Python <3.13 but also run on Colab's Python 3.13.
-!pip install -q --ignore-requires-python "tabpfn-rel[api]==0.0.5"
+!pip install -q --ignore-requires-python "tabpfn-rel[api]>=0.0.6"
 !pip install -q kagglehub
 
 import importlib.metadata
@@ -201,7 +201,6 @@ for name in RAW_CSVS:
 
 ```console
 Downloading Olist from Kaggle...
-Using Colab cache for faster access to the 'brazilian-ecommerce' dataset.
 olist_sellers_dataset.csv                       3,095 rows x  4 cols
 olist_customers_dataset.csv                    99,441 rows x  5 cols
 product_category_name_translation.csv              71 rows x  2 cols
@@ -561,7 +560,7 @@ package and calls `discover_models()` to register its models in this running
 notebook. The earlier TabPFN-Rel sections do not require it.
 
 ```python
-!pip install -q --ignore-requires-python "relarena==0.1.3"
+!pip install -q --ignore-requires-python "relarena>=0.1.4"
 
 from relarena_core import discover_models
 
@@ -620,7 +619,7 @@ test_scores.to_frame().round(3)
 
 ```console
                   Test ROC-AUC
-TabPFN-Rel               0.777
+TabPFN-Rel               0.784
 Dummy per entity         0.688
 Dummy                    0.500
 ```
@@ -642,9 +641,12 @@ target ("how much will this seller sell") instead of a 0/1 one.
 
 - [RelArena predictive-task guide](https://github.com/PriorLabs/relarena/blob/main/docs/predictive-task.md)
   — label queries, split timestamps, leakage
-- [The Olist example in the RelArena repo](https://github.com/PriorLabs/relarena/tree/main/examples)
+- [The Olist example in the TabPFN-Rel repo](https://github.com/PriorLabs/tabpfn-rel/tree/main/examples)
   — the same task as a plain script
 - [TabPFN](https://github.com/PriorLabs/TabPFN) and
   [tabpfn-client](https://github.com/PriorLabs/tabpfn-client)
 
-**Hint:** We designed the predictive interface with your favorite coding AI agent in mind. Point it at the resources above and it should be able to help formulate your first predictive task.
+**Let your coding agent do it.** Install the
+[TabPFN-Rel agent skill](https://docs.priorlabs.ai/capabilities/relational-agent-skill)
+in Claude Code or Codex, point the agent at your tables and ask your question. It
+prepares the data, writes both YAML files and compares TabPFN-Rel with baselines.
