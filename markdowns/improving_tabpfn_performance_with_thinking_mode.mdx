@@ -1,14 +1,14 @@
 ---
 title: Improving TabPFN Performance with Thinking Mode
-description: Compare baseline TabPFN and thinking mode on two binary classification
-  datasets.
+description: Compare baseline TabPFN and thinking mode on two regression datasets.
 cookbookTags:
 - thinking mode
 - api
-- classification
+- regression
 authors:
 - name: Eliott Kalfon
   linkedin: https://www.linkedin.com/in/eliott-kalfon/
+featured: true
 colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/improving_tabpfn_performance_with_thinking_mode.ipynb
 ---
 {/* cookbook-meta:start process_markdown.py */}
@@ -37,14 +37,14 @@ colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/bl
 
 TabPFN is strong out of the box. The newest and most powerful way to improve it is **thinking mode**: TabPFN-3-Thinking spends extra compute at fit time to deliver better predictions, enabled with a single flag. You pay the optimisation cost once at fit time, and every prediction afterwards benefits.
 
-Thinking mode runs on the hosted API client (`tabpfn-client`), so this whole notebook uses the client. We try it on two contrasting datasets, one where TabPFN is already near-saturated and one with more headroom, to see where the extra compute pays off most.
+Thinking mode runs on the hosted API client (`tabpfn-client`), so this whole notebook uses the client. We try it on two price-prediction datasets, one where TabPFN is already very strong and one that is harder, to see what the extra compute buys.
 
 ## Setup
 
 *Install, authenticate, and import.*
 
 ```python
-!pip install -q tabpfn-client scikit-learn numpy pandas matplotlib
+!pip install -q "tabpfn-client>=0.7.1" scikit-learn numpy pandas matplotlib
 ```
 
 ```python
@@ -64,14 +64,13 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.datasets import fetch_openml
 from sklearn.metrics import (
-    accuracy_score,
-    balanced_accuracy_score,
-    f1_score,
-    roc_auc_score,
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
 )
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
-from tabpfn_client import TabPFNClassifier
+from sklearn.preprocessing import OrdinalEncoder
+from tabpfn_client import TabPFNRegressor
 
 warnings.filterwarnings("ignore")
 
@@ -80,64 +79,58 @@ SEED = 0
 
 ## Data Loaders
 
-*Two roughly balanced binary datasets.*
+*Two price-prediction datasets.*
 
-`NATICUSdroid` is wide (86 features) and already easy for TabPFN; `in_vehicle_coupon_recommendation` is narrower with more headroom. A single loader handles OpenML's mixed categorical/numeric frames: categoricals are ordinal-encoded, missing values are filled, and the target is mapped so `1` is the minority class.
+`diamonds` is already easy for TabPFN (R² above 0.98); `house_sales` has more headroom. A single loader handles OpenML's mixed categorical/numeric frames: categoricals are ordinal-encoded and missing values are filled.
 
 ```python
 # @title
-def load_openml_binary(name):
-    """Fetch an OpenML binary-classification frame and return (X, y) as numpy.
-    Categoricals are ordinal-encoded, missing values filled, y mapped to {0,1}
-    with 1 = minority class."""
-    d = fetch_openml(name=name, as_frame=True, parser="auto")
-    X, y = d.data.copy(), d.target
-    cat = [c for c in X.columns if str(X[c].dtype) in ("category", "object")]
+def load_openml_regression(data_id):
+    """Fetch an OpenML regression frame and return (X, y) as numpy.
+    Categoricals are ordinal-encoded and missing values filled."""
+    d = fetch_openml(data_id=data_id, as_frame=True, parser="auto")
+    X, y = d.data.copy(), pd.to_numeric(d.target)
+    cat = [c for c in X.columns if str(X[c].dtype) in ("category", "object", "string")]
     num = [c for c in X.columns if c not in cat]
     if cat:
         enc = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
         X[cat] = enc.fit_transform(X[cat].astype(str))
     X[num] = X[num].apply(pd.to_numeric, errors="coerce")
     X = X.fillna(X.median(numeric_only=True)).fillna(-1)
-    y = LabelEncoder().fit_transform(y.astype(str))
-    if y.mean() > 0.5:
-        y = 1 - y
-    return X.to_numpy(dtype=float), y
+    return X.to_numpy(dtype=float), y.to_numpy(dtype=float)
 
 
-def load_naticus():
-    """NATICUSdroid: Android malware detection, 7491 x 86 binary permission/intent
-    flags, ~35% malicious."""
-    return load_openml_binary("NATICUSdroid")
+def load_diamonds():
+    """diamonds: 53,940 diamonds x 9 features (carat, cut, color, clarity,
+    dimensions); target is price in USD."""
+    return load_openml_regression(42225)
 
 
-def load_in_vehicle():
-    """in-vehicle coupon recommendation: 12684 x 24 mixed features (weather, time,
-    destination, coupon type), ~43% accepted."""
-    return load_openml_binary("in_vehicle_coupon_recommendation")
+def load_house_sales():
+    """house_sales: 21,613 King County home sales x 21 features (size, rooms,
+    condition, location); target is sale price in USD."""
+    return load_openml_regression(42731)
 ```
 
 ## Model Helpers
 
 *Building the client classifier and scoring.*
 
-`build_classifier` returns the hosted API client (every fit runs on it). `score_clf` reports ranking and threshold metrics side by side.
+`build_regressor` returns the hosted API client (every fit runs on it). `score_reg` reports RMSE, MAE and R² side by side.
 
 ```python
 # @title
-def build_classifier(**kwargs):
+def build_regressor(**kwargs):
     """All fits run on the hosted API client (thinking mode is API only)."""
-    return TabPFNClassifier(random_state=SEED, **kwargs)
+    return TabPFNRegressor(random_state=SEED, **kwargs)
 
 
-def score_clf(model, Xte, yte):
-    proba = model.predict_proba(Xte)
-    pred = model.classes_[np.argmax(proba, axis=1)]
+def score_reg(model, Xte, yte):
+    pred = np.asarray(model.predict(Xte), dtype=float)
     return {
-        "roc_auc":           roc_auc_score(yte, proba[:, 1]),
-        "balanced_accuracy": balanced_accuracy_score(yte, pred),
-        "f1":                f1_score(yte, pred, pos_label=1, average="binary", zero_division=0),
-        "accuracy":          accuracy_score(yte, pred),
+        "rmse": float(np.sqrt(mean_squared_error(yte, pred))),
+        "mae":  float(mean_absolute_error(yte, pred)),
+        "r2":   float(r2_score(yte, pred)),
     }
 ```
 
@@ -148,23 +141,26 @@ def score_clf(model, Xte, yte):
 Thinking mode applies test-time compute scaling to TabPFN. Instead of a single forward pass, TabPFN-3-Thinking runs an optimisation at fit time, and every prediction afterwards draws on that work. It is a single flag.
 
 ```python
-from tabpfn_client import TabPFNClassifier
+from tabpfn_client import TabPFNRegressor
 
-# Simplest form: enable with defaults
-model = TabPFNClassifier(thinking_effort="high")
+# Simplest form: enable with defaults (effort "medium")
+model = TabPFNRegressor(thinking_mode=True)
 model.fit(X_train, y_train)
 model.predict(X_test)
+
+# Or choose the effort level explicitly
+model = TabPFNRegressor(thinking_effort="high")
 ```
 
-`thinking_effort` is `"medium"` or `"high"`; `thinking_metric` targets the objective (classification: `accuracy`, `log_loss`, `roc_auc`). See the [Thinking mode](https://docs.priorlabs.ai/capabilities/thinking-mode) page for details.
+`thinking_effort` ranges from fastest to most thorough: `"micro"`, `"mini"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"` (requires `tabpfn-client` 0.7.1+). `thinking_metric` targets the objective (regression: `rmse`, `mae`; classification: `accuracy`, `log_loss`, `roc_auc`, and more). See the [Thinking mode](https://docs.priorlabs.ai/capabilities/thinking-mode) page for details.
 
-> A high-effort fit on these datasets takes a few minutes; the cost is paid once at fit time.
+> Thinking runs an optimization over the training set at fit time, so a fit takes minutes rather than seconds and grows with the number of rows and features: about 7 minutes on diamonds (40,000 training rows) and 3 minutes on house sales (16,000) in this notebook. The cost is paid once at fit time; prediction speed is unchanged.
 
 ```python
 # @title
 def thinking_kwargs(effort="high", metric=None):
     """Thinking mode: TabPFN-3-Thinking spends extra compute at fit time for better
-    predictions. metric is one of accuracy, log_loss, roc_auc for classification."""
+    predictions. metric is one of rmse, mae for regression."""
     kw = {"thinking_effort": effort}
     if metric:
         kw["thinking_metric"] = metric
@@ -175,20 +171,20 @@ def thinking_kwargs(effort="high", metric=None):
 
 *One function to run a configuration, plus helpers to tabulate results.*
 
-`run` fits a configuration on the client and scores it; `make_results_df` adds a relative-improvement column measuring how much of the gap to a perfect score thinking closes against the baseline.
+`run` fits a configuration on the client and scores it; `make_results_df` adds a column with the percentage RMSE reduction against the baseline.
 
 ```python
 # @title
 def run(name, Xtr, Xte, ytr, yte, model_kwargs=None):
-    """Fit a client classifier with the given kwargs and score it."""
+    """Fit a client regressor with the given kwargs and score it."""
     model_kwargs = model_kwargs or {}
     t0 = time.time()
     try:
-        clf = build_classifier(**model_kwargs)
-        clf.fit(Xtr, ytr)
-        metrics = score_clf(clf, Xte, yte)
+        reg = build_regressor(**model_kwargs)
+        reg.fit(Xtr, ytr)
+        metrics = score_reg(reg, Xte, yte)
         metrics["n_features"] = Xtr.shape[1]
-        del clf
+        del reg
     except Exception as e:
         print(f"  {name}: FAILED - {e}")
         metrics = {"n_features": np.nan}
@@ -200,12 +196,12 @@ def run(name, Xtr, Xte, ytr, yte, model_kwargs=None):
 def make_results_df(rows, headline):
     df = pd.DataFrame(rows)
     base = df.loc[df.config == "baseline", headline].iloc[0]
-    df["rel_improve_%"] = 100 * (df[headline] - base) / (1 - base)
+    df["rmse_reduction_%"] = 100 * (base - df[headline]) / base
     return df
 
 
 def show(df, headline, cols=None):
-    cols = cols or ["config", headline, "n_features", "secs", "rel_improve_%"]
+    cols = cols or ["config", headline, "n_features", "secs", "rmse_reduction_%"]
     display(df[cols].round(4).set_index("config"))
 ```
 
@@ -213,89 +209,94 @@ def show(df, headline, cols=None):
 
 *Baseline versus thinking mode on each dataset.*
 
-## NATICUSdroid: a Near-Saturated Baseline
+## Diamonds: a Strong Baseline
 
 *Can thinking squeeze out the last bit of quality?*
 
-NATICUSdroid classifies Android apps as benign or malicious from 86 binary permission and intent flags (7,491 apps, ~35% malicious). TabPFN is already excellent here out of the box (ROC AUC ~0.99), so the question is whether thinking mode can close any of the small remaining gap. Because the classes are roughly balanced we lead with **ROC AUC** and track balanced accuracy alongside.
+The diamonds dataset predicts the price of a diamond from its carat, cut, color, clarity and dimensions (53,940 diamonds, 9 features). TabPFN is already excellent here out of the box (R² above 0.98), so the question is whether thinking mode can close any of the small remaining gap. We lead with **RMSE** in dollars and track MAE and R² alongside.
 
 ### Load the data
 
-*The full dataset, with a stratified 75/25 split.*
+*The full dataset, with a 75/25 split.*
 
 ```python
-print("Loading NATICUSdroid ...")
-X_nat, y_nat = load_naticus()
-print(f"Shape: {X_nat.shape}  |  positive rate: {y_nat.mean():.1%}")
+print("Loading diamonds ...")
+X_dia, y_dia = load_diamonds()
+print(f"Shape: {X_dia.shape}  |  mean price: ${y_dia.mean():,.0f}")
 
-Xtr_nat, Xte_nat, ytr_nat, yte_nat = train_test_split(
-    X_nat, y_nat, test_size=0.25, random_state=SEED, stratify=y_nat
+Xtr_dia, Xte_dia, ytr_dia, yte_dia = train_test_split(
+    X_dia, y_dia, test_size=0.25, random_state=SEED
 )
 ```
 
 ```console
-Loading NATICUSdroid ...
-Shape: (7491, 86)  |  positive rate: 35.0%
+Loading diamonds ...
+Shape: (53940, 9)  |  mean price: $3,933
 ```
 
 ### Baseline
 
-*Default TabPFN on all 86 features, scored on ROC AUC.*
+*Default TabPFN on all 9 features, scored on RMSE.*
 
 ```python
-nat_rows = []
-nat_rows.append(run("baseline", Xtr_nat, Xte_nat, ytr_nat, yte_nat))
-print(f"ROC AUC: {nat_rows[-1]['roc_auc']:.4f}")
+dia_rows = []
+dia_rows.append(run("baseline", Xtr_dia, Xte_dia, ytr_dia, yte_dia))
+print(f"RMSE: {dia_rows[-1]['rmse']:,.1f}")
 ```
 
 ```console
-ROC AUC: 0.9883
+RMSE: 491.7
 ```
 
 ### Thinking mode
 
 *The same fit, with one extra flag.*
 
-We optimise `roc_auc`, a threshold-free measure of ranking quality. Even on a near-saturated baseline, thinking closes a meaningful share of the remaining gap to a perfect score.
+We optimise `rmse`, the same metric we report.
 
 ```python
-nat_rows.append(run(
-    "thinking high (roc_auc)",
-    Xtr_nat, Xte_nat, ytr_nat, yte_nat,
-    model_kwargs=thinking_kwargs(effort="high", metric="roc_auc"),
+dia_rows.append(run(
+    "thinking high (rmse)",
+    Xtr_dia, Xte_dia, ytr_dia, yte_dia,
+    model_kwargs=thinking_kwargs(effort="high", metric="rmse"),
 ))
-print(f"ROC AUC: {nat_rows[-1]['roc_auc']:.4f}")
+print(f"RMSE: {dia_rows[-1]['rmse']:,.1f}")
 ```
 
 ```console
-ROC AUC: 0.9902
+RMSE: 483.7
 ```
 
 ### Results
 
 ```python
-df_nat = make_results_df(nat_rows, "roc_auc")
-show(df_nat, "roc_auc",
-     cols=["config", "roc_auc", "f1", "n_features", "secs", "rel_improve_%"])
+df_dia = make_results_df(dia_rows, "rmse")
+show(df_dia, "rmse",
+     cols=["config", "rmse", "mae", "r2", "n_features", "secs", "rmse_reduction_%"])
 ```
 
 ```console
-                         roc_auc      f1  n_features  secs  rel_improve_%
+                          rmse       mae      r2  n_features   secs  \
 config
-baseline                  0.9883  0.9230          86   4.6          0.000
-thinking high (roc_auc)   0.9902  0.9339          86  11.6         16.492
+baseline              491.7261  237.7638  0.9849           9   23.5
+thinking high (rmse)  483.7309  234.4880  0.9853           9  458.3
+
+                      rmse_reduction_%
+config
+baseline                         0.000
+thinking high (rmse)             1.626
 ```
 
 ```python
 # @title
 fig, ax = plt.subplots(figsize=(8, 4))
-colors = ["#d0d0d0" if c == "baseline" else "#7B1FA2" for c in df_nat["config"]]
-ax.barh(df_nat["config"], df_nat["roc_auc"], color=colors)
-ax.axvline(df_nat.loc[df_nat.config == "baseline", "roc_auc"].iloc[0],
-           color="black", linestyle="--", linewidth=1, label="baseline")
-ax.set_xlim(0.97, 0.995)
-ax.set_xlabel("ROC AUC")
-ax.set_title("NATICUSdroid - thinking lifts a near-saturated baseline")
+colors = ["#d0d0d0" if c == "baseline" else "#7B1FA2" for c in df_dia["config"]]
+ax.barh(df_dia["config"], df_dia["rmse"], color=colors)
+base = df_dia.loc[df_dia.config == "baseline", "rmse"].iloc[0]
+ax.axvline(base, color="black", linestyle="--", linewidth=1, label="baseline")
+ax.set_xlim(df_dia["rmse"].min() * 0.95, df_dia["rmse"].max() * 1.02)
+ax.set_xlabel("RMSE (USD, lower is better)")
+ax.set_title("diamonds - thinking on a strong baseline")
 ax.invert_yaxis()
 ax.legend()
 plt.tight_layout()
@@ -304,39 +305,39 @@ plt.show()
 
 ![Results](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/improving_tabpfn_performance_with_thinking_mode/plot-01.png)
 
-## In-Vehicle Coupons: More Headroom
+## House Sales: a Harder Target
 
-*Where thinking mode has more room to work.*
+*Does the gain hold on a noisier problem?*
 
-The in-vehicle coupon dataset asks whether a driver would accept a coupon pushed to their car, given 24 features describing the trip and the offer (12,684 scenarios, ~43% accepted). The baseline leaves more headroom than NATICUSdroid, so thinking has more to gain: it lifts ROC AUC, balanced accuracy, F1 and accuracy together.
+The house sales dataset predicts the sale price of homes in King County, Washington, from 21 features describing size, rooms, condition and location (21,613 sales). The baseline leaves more headroom than diamonds (R² around 0.94), so we check whether thinking delivers a similar gain here.
 
 ### Load the data
 
 ```python
-print("Loading in-vehicle coupon recommendation ...")
-X_cpn, y_cpn = load_in_vehicle()
-print(f"Shape: {X_cpn.shape}  |  positive rate: {y_cpn.mean():.1%}")
+print("Loading house sales ...")
+X_hs, y_hs = load_house_sales()
+print(f"Shape: {X_hs.shape}  |  mean price: ${y_hs.mean():,.0f}")
 
-Xtr_cpn, Xte_cpn, ytr_cpn, yte_cpn = train_test_split(
-    X_cpn, y_cpn, test_size=0.25, random_state=SEED, stratify=y_cpn
+Xtr_hs, Xte_hs, ytr_hs, yte_hs = train_test_split(
+    X_hs, y_hs, test_size=0.25, random_state=SEED
 )
 ```
 
 ```console
-Loading in-vehicle coupon recommendation ...
-Shape: (12684, 24)  |  positive rate: 43.2%
+Loading house sales ...
+Shape: (21613, 21)  |  mean price: $540,088
 ```
 
 ### Baseline
 
 ```python
-cpn_rows = []
-cpn_rows.append(run("baseline", Xtr_cpn, Xte_cpn, ytr_cpn, yte_cpn))
-print(f"ROC AUC: {cpn_rows[-1]['roc_auc']:.4f}")
+hs_rows = []
+hs_rows.append(run("baseline", Xtr_hs, Xte_hs, ytr_hs, yte_hs))
+print(f"RMSE: {hs_rows[-1]['rmse']:,.1f}")
 ```
 
 ```console
-ROC AUC: 0.8495
+RMSE: 92,710.0
 ```
 
 ### Thinking mode
@@ -344,43 +345,48 @@ ROC AUC: 0.8495
 *The lever that moves the needle most here.*
 
 ```python
-cpn_rows.append(run(
-    "thinking high (roc_auc)",
-    Xtr_cpn, Xte_cpn, ytr_cpn, yte_cpn,
-    model_kwargs=thinking_kwargs(effort="high", metric="roc_auc"),
+hs_rows.append(run(
+    "thinking high (rmse)",
+    Xtr_hs, Xte_hs, ytr_hs, yte_hs,
+    model_kwargs=thinking_kwargs(effort="high", metric="rmse"),
 ))
-print(f"ROC AUC: {cpn_rows[-1]['roc_auc']:.4f}")
+print(f"RMSE: {hs_rows[-1]['rmse']:,.1f}")
 ```
 
 ```console
-ROC AUC: 0.8535
+RMSE: 91,291.0
 ```
 
 ### Results
 
 ```python
-df_cpn = make_results_df(cpn_rows, "roc_auc")
-show(df_cpn, "roc_auc",
-     cols=["config", "roc_auc", "f1", "n_features", "secs", "rel_improve_%"])
+df_hs = make_results_df(hs_rows, "rmse")
+show(df_hs, "rmse",
+     cols=["config", "rmse", "mae", "r2", "n_features", "secs", "rmse_reduction_%"])
 ```
 
 ```console
-                         roc_auc      f1  n_features  secs  rel_improve_%
+                            rmse         mae      r2  n_features   secs  \
 config
-baseline                  0.8495  0.7216          24   3.0         0.0000
-thinking high (roc_auc)   0.8535  0.7329          24  14.0         2.6523
+baseline              92710.0252  52209.0676  0.9353          21    4.7
+thinking high (rmse)  91291.0290  51350.2921  0.9373          21  206.7
+
+                      rmse_reduction_%
+config
+baseline                        0.0000
+thinking high (rmse)            1.5306
 ```
 
 ```python
 # @title
 fig, ax = plt.subplots(figsize=(8, 4))
-colors = ["#d0d0d0" if c == "baseline" else "#7B1FA2" for c in df_cpn["config"]]
-ax.barh(df_cpn["config"], df_cpn["roc_auc"], color=colors)
-ax.axvline(df_cpn.loc[df_cpn.config == "baseline", "roc_auc"].iloc[0],
-           color="black", linestyle="--", linewidth=1, label="baseline")
-ax.set_xlim(0.80, 0.86)
-ax.set_xlabel("ROC AUC")
-ax.set_title("in-vehicle coupon - more headroom, larger thinking lift")
+colors = ["#d0d0d0" if c == "baseline" else "#7B1FA2" for c in df_hs["config"]]
+ax.barh(df_hs["config"], df_hs["rmse"], color=colors)
+base = df_hs.loc[df_hs.config == "baseline", "rmse"].iloc[0]
+ax.axvline(base, color="black", linestyle="--", linewidth=1, label="baseline")
+ax.set_xlim(df_hs["rmse"].min() * 0.95, df_hs["rmse"].max() * 1.02)
+ax.set_xlabel("RMSE (USD, lower is better)")
+ax.set_title("house sales - a harder target")
 ax.invert_yaxis()
 ax.legend()
 plt.tight_layout()
@@ -391,6 +397,6 @@ plt.show()
 
 ## Takeaways
 
-- **Thinking mode is the simplest, strongest lever.** One flag (`thinking_effort="high"`) lifted ROC AUC and every threshold metric on both datasets, with no feature engineering or tuning.
-- **The gain scales with headroom.** On a near-saturated baseline (NATICUSdroid) the lift is small; with more room (in-vehicle coupons) it is larger. Thinking never hurt ROC AUC here.
+- **Thinking mode is the simplest lever.** One flag (`thinking_mode=True`, or `thinking_effort="high"` as here) reduced RMSE, MAE and lifted R² on both datasets, with no feature engineering or tuning.
+- **The gain is consistent.** RMSE fell by 1.6% on diamonds and 1.5% on house sales, so the strong baseline did not cap the improvement. Thinking never hurt a metric here.
 - **It runs on the hosted client and the compute is paid once, at fit time.** Every prediction afterwards benefits, so reach for it first.

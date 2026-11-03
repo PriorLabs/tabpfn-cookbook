@@ -1,7 +1,7 @@
 ---
 title: Experiment with Thinking Mode
-description: Choose a Thinking objective and use group_col for repeated measurements
-  from the same subject.
+description: Choose a Thinking objective and use group_col so Thinking generalizes
+  to unseen groups.
 cookbookTags:
 - thinking mode
 - api
@@ -11,6 +11,7 @@ authors:
 - name: Prior Labs
   linkedin: https://www.linkedin.com/company/prior-labs
   twitter: https://twitter.com/prior_labs
+featured: true
 colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/experiment_with_thinking_mode.ipynb
 ---
 {/* cookbook-meta:start process_markdown.py */}
@@ -33,17 +34,17 @@ colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/bl
 {/* cookbook-colab:end process_markdown.py */}
 </div>
 {/* cookbook-meta:end process_markdown.py */}
-Compare standard TabPFN 3.5 with Thinking for Android malware detection,
-then classify mice from protein measurements using `group_col` for repeated
-observations of the same animal.
+Compare standard TabPFN 3.5 with Thinking for predicting truck air-system failures,
+then predict forest cover in a wilderness area the model has never seen, using
+`group_col` so Thinking optimizes for unseen groups.
 
 ## Setup
 
-Install the client and dependencies (`group_col` requires `tabpfn-client` 0.6.0+).
+Install the client and dependencies (the current Thinking mode and `group_col` require `tabpfn-client` 0.7.1+).
 In Colab, add `TABPFN_TOKEN` to Secrets; elsewhere, use your usual client authentication.
 
 ```python
-%pip install -q --upgrade tabpfn-client==0.6.0 pandas==2.3.3 numpy==2.5.3 scikit-learn==1.9.0 matplotlib==3.11.2 pyarrow==25.0.1 huggingface-hub==1.31.0
+%pip install -q --upgrade tabpfn-client==0.7.1 pandas==2.3.3 numpy==2.5.3 scikit-learn==1.9.0 matplotlib==3.11.2 pyarrow==25.0.1 huggingface-hub==1.31.0
 ```
 
 ```python
@@ -68,9 +69,9 @@ import pandas as pd
 from huggingface_hub import hf_hub_download
 from IPython.display import display
 from sklearn.datasets import fetch_openml
-from sklearn.metrics import log_loss, roc_auc_score
+from sklearn.metrics import f1_score, log_loss
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, OrdinalEncoder
 from tabpfn_client import TabPFNClassifier
 from tabpfn_client.api_models import ModelVersion
 
@@ -80,16 +81,23 @@ plt.rcParams.update({"figure.dpi": 120, "axes.spines.top": False,
 
 ## Choose the objective
 
-Enable Thinking with `thinking_effort="high"` and set `thinking_metric` to match
-your task: ROC AUC for binary ranking, or log-loss for class probabilities.
-See the [Thinking mode guide](https://docs.priorlabs.ai/capabilities/thinking-mode)
-for supported settings.
+Enable Thinking with `thinking_mode=True` (effort `"medium"`) or pick an effort level
+explicitly with `thinking_effort`, from fastest to most thorough: `"micro"`, `"mini"`,
+`"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`. We use `"high"` here. Set
+`thinking_metric` to match your task. Both examples below optimise log-loss for
+calibrated class probabilities, and we report macro F1 alongside. See the
+[Thinking mode guide](https://docs.priorlabs.ai/capabilities/thinking-mode)
+for supported settings. Thinking runs an optimization over the training set at fit time, so fitting takes
+minutes rather than seconds and grows with the number of rows and features. In this
+notebook the fits take roughly 20 minutes on the first dataset and 3 to 10 minutes
+on the second; prediction time is unchanged. The effort levels set a compute
+budget, and on these datasets lower levels converge to the same solution.
 
-We use TabPFN 3.5 throughout. The helper reports the chosen metric and elapsed
+We use TabPFN 3.5 throughout. The helper reports log-loss, macro F1 and elapsed
 time, including fitting, prediction, and API overhead.
 
 ```python
-def evaluate(model, X_train, X_test, y_train, y_test, metric):
+def evaluate(model, X_train, X_test, y_train, y_test):
     started = time.perf_counter()
     model.fit(X_train, y_train)
     probability = np.asarray(model.predict_proba(X_test), dtype=float)
@@ -98,214 +106,251 @@ def evaluate(model, X_train, X_test, y_train, y_test, metric):
     assert np.allclose(probability.sum(axis=1), 1, atol=1e-5)
     # Normalize small floating-point rounding differences from the API.
     probability /= probability.sum(axis=1, keepdims=True)
-    score = (roc_auc_score(y_test, probability[:, 1]) if metric == "roc_auc"
-             else log_loss(y_test, probability, labels=model.classes_))
-    return {"Score": score, "Seconds": time.perf_counter() - started}
+    prediction = model.classes_[probability.argmax(axis=1)]
+    return {"Log-loss": log_loss(y_test, probability, labels=model.classes_),
+            "Macro F1": f1_score(y_test, prediction, average="macro"),
+            "Seconds": time.perf_counter() - started}
 ```
 
-## NATICUSdroid: malware detection
+## Scania trucks: air pressure system failures
 
-Predict whether an Android app is malicious from 86 permission and intent
-flags. Both models use the same stratified 75/25 split. Higher ROC AUC is better.
+Predict whether a truck's air pressure system (APS) caused a breakdown from 170
+anonymized sensor readings ([UCI APS Failure at Scania Trucks](https://doi.org/10.24432/C51S51),
+CC BY 4.0). Failures are rare, about 1.7% of trucks, so we optimise log-loss for
+calibrated failure probabilities and report macro F1 alongside. Both models use the same stratified 75/25 split.
+Lower log-loss is better. The high-effort fit on 57,000 rows and 170 features takes
+about 20 minutes; the standard fit takes seconds.
 
 ```python
-android = fetch_openml(name="NATICUSdroid", as_frame=True, parser="auto")
-X_nat = android.data.apply(pd.to_numeric)
-y_nat = LabelEncoder().fit_transform(android.target.astype(str))
-Xtr_nat, Xte_nat, ytr_nat, yte_nat = train_test_split(
-    X_nat, y_nat, test_size=0.25, random_state=0, stratify=y_nat,
+aps = fetch_openml(data_id=41138, as_frame=True, parser="auto")  # APS Failure at Scania Trucks
+X_aps = aps.data.apply(pd.to_numeric, errors="coerce")
+y_aps = LabelEncoder().fit_transform(aps.target.astype(str))
+Xtr_aps, Xte_aps, ytr_aps, yte_aps = train_test_split(
+    X_aps, y_aps, test_size=0.25, random_state=0, stratify=y_aps,
 )
-print(f"{len(Xtr_nat):,} training apps; {len(Xte_nat):,} held-out apps; {X_nat.shape[1]} features")
+print(f"{len(Xtr_aps):,} training trucks; {len(Xte_aps):,} held-out trucks; "
+      f"{X_aps.shape[1]} features; {y_aps.mean():.1%} failures")
 ```
 
 ```console
-5,618 training apps; 1,873 held-out apps; 86 features
+57,000 training trucks; 19,000 held-out trucks; 170 features; 1.8% failures
 ```
 
 ```python
-nat_rows = []
+aps_rows = []
 for name, settings in [
     ("Standard", {}),
-    ("Thinking (high)", {"thinking_effort": "high", "thinking_metric": "roc_auc"}),
+    ("Thinking (high)", {"thinking_effort": "high", "thinking_metric": "log_loss"}),
 ]:
     model = TabPFNClassifier.create_default_for_version(ModelVersion.V3_5, **settings)
-    result = evaluate(model, Xtr_nat, Xte_nat, ytr_nat, yte_nat, "roc_auc")
-    nat_rows.append({"Model": name, **result})
-nat_results = pd.DataFrame(nat_rows).set_index("Model").rename(columns={"Score": "ROC AUC"})
-display(nat_results.round(4))
+    result = evaluate(model, Xtr_aps, Xte_aps, ytr_aps, yte_aps)
+    aps_rows.append({"Model": name, **result})
+aps_results = pd.DataFrame(aps_rows).set_index("Model")
+display(aps_results.round(4))
 ```
 
 ```console
-                 ROC AUC  Seconds
+                 Log-loss  Macro F1    Seconds
 Model
-Standard           0.989   4.9148
-Thinking (high)    0.991  72.8368
+Standard           0.0142    0.9366    38.5919
+Thinking (high)    0.0121    0.9450  1260.8628
 ```
 
 ```python
 fig, ax = plt.subplots(figsize=(8, 3.2))
-scores = nat_results["ROC AUC"]
+scores = aps_results["Log-loss"]
 bars = ax.barh(scores.index, scores, color=["#b0bec5", "#7B1FA2"])
-padding = max((scores.max() - scores.min()) * 0.7, 0.003)
+padding = max((scores.max() - scores.min()) * 0.7, 0.001)
 ax.set_xlim(max(0, scores.min() - padding), min(1, scores.max() + padding))
 ax.bar_label(bars, fmt="%.4f", padding=5)
-ax.set(xlabel="ROC AUC (higher is better; zoomed axis)",
-       title="Android malware detection: standard vs Thinking")
+ax.set(xlabel="Log-loss (lower is better; zoomed axis)",
+       title="Truck air-system failures: standard vs Thinking")
 ax.invert_yaxis()
 fig.tight_layout()
 plt.show()
 ```
 
-![NATICUSdroid results](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/experiment_with_thinking_mode/naticus-results.png)
+![APS failure results](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/experiment_with_thinking_mode/aps-results.png)
 
-Thinking changes ROC AUC from **0.9890 to 0.9910** on this split.
+Thinking changes log-loss from **0.0142 to 0.0121** on this split, 15% lower, and
+macro F1 from 0.9366 to 0.9450. The gain comes from the fit-time optimization,
+which is why fitting took about 20 minutes instead of seconds.
 
-## Mice proteins: use `group_col` for groups
+## Forest cover type: use `group_col` for unseen regions
 
-The [UCI Mice Protein Expression dataset](https://doi.org/10.24432/C50S3Z)
-contains 77 protein measurements and eight experimental classes, with
-**15 observations per mouse across 72 mice**.
+The [UCI Covertype dataset](https://doi.org/10.24432/C50K5N) describes 30 m
+forest cells in the Roosevelt National Forest with cartographic features such as
+elevation, slope and soil type. The target is the dominant tree species.
 
 We use the [BeyondArena](https://huggingface.co/datasets/TabArena/BeyondArena)
-version, which removes target-defining columns and provides animal identifiers
-and grouped splits. This is a selected example of grouped data.
-Credit: Higuera, Gardiner, and Cios (2015), CC BY 4.0.
+version, which keeps three cover types and three wilderness areas and provides
+splits that hold out entire wilderness areas. Rows from the same area share
+climate and terrain, so this is grouped data: a model that generalizes to a new
+area is more useful than one that interpolates within the areas it was trained on.
+The target is not constant within an area; every area contains all three cover
+types, so predictions and scores stay at the row level. The group only decides
+which rows must be held out together.
+Credit: Blackard (1998), CC BY 4.0.
 
 ```python
-def download_mice_file(filename):
+def download_covertype_file(filename):
     return hf_hub_download(
         "TabArena/BeyondArena",
-        f"mice_protein_trisomy_discriminant/019d738d-99a8-7850-b911-f244ac4ad485/{filename}",
+        f"covertype/019d7391-8e33-757b-b38a-79ec188fa001/{filename}",
         repo_type="dataset", revision="88059a3f02ec4abb6ec24bbe0d1c0b7eed31485d",
     )
 
-mice = pd.read_parquet(download_mice_file("dataset.parquet"))
-published_splits = json.loads(Path(download_mice_file(
+forest = pd.read_parquet(download_covertype_file("dataset.parquet"))
+published_splits = json.loads(Path(download_covertype_file(
     "experiment_metadata.predictive-ml-splits-mold-v1.json"
 )).read_text())["splits"]
-# All three folds of the first published grouped repetition; no split search.
-mice_splits = [published_splits["0"][str(fold)] for fold in range(3)]
-assert not {"Genotype", "Treatment", "Behavior"} & set(mice.columns)
-print(f"{len(mice):,} measurements, {mice.MouseID.nunique()} mice, {mice['class'].nunique()} classes")
+# First fold of the published grouped split: two areas train, one area tests.
+forest_train_idx, forest_test_idx = published_splits["0"]["0"]
+print(f"{len(forest):,} cells, {forest.Wilderness_Area.nunique()} wilderness areas, "
+      f"{forest.Cover_Type.nunique()} cover types")
 ```
 
 ```console
-1,080 measurements, 72 mice, 8 classes
+512,625 cells, 3 wilderness areas, 3 cover types
 ```
 
-### Evaluate on unseen mice
+### Evaluate on an unseen wilderness area
 
-Use the three folds of BeyondArena's first grouped repetition. Each fold holds
-out entire mice, with no animal shared between training and test data.
+The published fold trains on two wilderness areas and tests on the third. A random
+row split would leak: neighbouring cells from the same area would land on both
+sides, and the score would reward memorizing each area's terrain rather than
+generalizing to a new one. The full fold is large, so we take a stratified sample
+of 50,000 training cells and 20,000 test cells, keeping the areas disjoint.
 
 ```python
-split_rows = []
-for fold, (train, test) in enumerate(mice_splits):
-    train_mice = set(mice.iloc[train].MouseID)
-    test_mice = set(mice.iloc[test].MouseID)
-    assert not set(train) & set(test)
-    assert train_mice.isdisjoint(test_mice)
-    split_rows.append({"Fold": fold, "Train rows": len(train), "Test rows": len(test),
-                       "Train mice": len(train_mice), "Test mice": len(test_mice),
-                       "Shared mice": len(train_mice & test_mice)})
-display(pd.DataFrame(split_rows).set_index("Fold"))
+forest_train = forest.iloc[forest_train_idx]
+forest_test = forest.iloc[forest_test_idx]
+forest_train, _ = train_test_split(forest_train, train_size=50_000, random_state=0,
+                                   stratify=forest_train.Cover_Type)
+forest_test, _ = train_test_split(forest_test, train_size=20_000, random_state=0,
+                                  stratify=forest_test.Cover_Type)
+train_areas = set(forest_train.Wilderness_Area)
+test_areas = set(forest_test.Wilderness_Area)
+assert train_areas.isdisjoint(test_areas)
+display(pd.DataFrame({
+    "Split": ["Train", "Test"],
+    "Rows": [len(forest_train), len(forest_test)],
+    "Wilderness areas": [", ".join(sorted(train_areas)), ", ".join(sorted(test_areas))],
+}).set_index("Split"))
 ```
 
 ```console
-      Train rows  Test rows  Train mice  Test mice  Shared mice
-Fold
-0            720        360          48         24            0
-1            720        360          48         24            0
-2            720        360          48         24            0
+        Rows                              Wilderness areas
+Split
+Train  50000  Neota Wilderness Area, Rawah Wilderness Area
+Test   20000                 Comanche Peak Wilderness Area
 ```
 
 ### Pass the group column
 
-For grouped data, use Thinking with `group_col="MouseID"` and keep that column
-in both training and prediction DataFrames. Compare against standard TabPFN
-using the protein features alone. Both use the same held-out mice;
-`thinking_metric="log_loss"` selects our metric (lower is better).
+For grouped data, use Thinking with `group_col="Wilderness_Area"` and keep that
+column in both training and prediction DataFrames. Thinking uses the column for
+its own fit-time validation: rows of one area are never split between its internal
+training and validation sets, so it optimizes for unseen areas instead of unseen
+rows. That internal validation is separate from the outer holdout above, which
+Thinking never sees. We compare four models on the
+same held-out area: standard TabPFN, Thinking without the group column, Thinking
+with it, and Thinking with it optimising macro F1 instead of log-loss, to show how
+the choice of `thinking_metric` changes what improves. Soil descriptors are ordinal-encoded; the wilderness area is
+only used as the group column, never as a feature. Expect about 10 minutes for
+Thinking without the group column and 3 minutes for each grouped fit on 50,000 rows.
 
 ```python
-mice_rows = []
-for fold, (train, test) in enumerate(mice_splits):
-    X_train = mice.iloc[train].drop(columns="class").copy()
-    X_test = mice.iloc[test].drop(columns="class").copy()
-    encoder = LabelEncoder().fit(mice.iloc[train]["class"])
-    y_train = encoder.transform(mice.iloc[train]["class"])
-    y_test = encoder.transform(mice.iloc[test]["class"])
+GROUP = "Wilderness_Area"
+soil_columns = ["Soil_Type", "Soil_ClimaticZone", "Soil_GeologicZone"]
+soil_encoder = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
+soil_encoder.fit(forest_train[soil_columns].astype(str))
 
-    models = [
-        ("Standard", TabPFNClassifier.create_default_for_version(ModelVersion.V3_5)),
-        ("Thinking + group_col", TabPFNClassifier.create_default_for_version(
-            ModelVersion.V3_5, thinking_effort="high", thinking_metric="log_loss",
-            group_col="MouseID")),
-    ]
-    for name, model in models:
-        # Only grouped Thinking receives the original mouse identities.
-        Xtr = X_train if model.group_col else X_train.drop(columns="MouseID")
-        Xte = X_test if model.group_col else X_test.drop(columns="MouseID")
-        result = evaluate(model, Xtr, Xte, y_train, y_test, "log_loss")
-        mice_rows.append({"Fold": fold, "Model": name, **result})
-        print(f"Fold {fold}, {name}: log-loss {result['Score']:.4f}")
+def features(frame):
+    X = frame.drop(columns="Cover_Type").copy()
+    X[soil_columns] = soil_encoder.transform(X[soil_columns].astype(str))
+    X[GROUP] = X[GROUP].astype(str)
+    return X
 
-mice_results = pd.DataFrame(mice_rows).rename(columns={"Score": "Log-loss"})
-display(mice_results.pivot(index="Fold", columns="Model", values="Log-loss").round(4))
+X_train, X_test = features(forest_train), features(forest_test)
+encoder = LabelEncoder().fit(forest_train["Cover_Type"].astype(str))
+y_train = encoder.transform(forest_train["Cover_Type"].astype(str))
+y_test = encoder.transform(forest_test["Cover_Type"].astype(str))
+
+forest_rows = []
+# group_col tells Thinking which rows belong together, so its internal validation
+# holds out whole wilderness areas. Without it, Thinking validates on random rows
+# from the training areas, which leaks terrain across the split.
+models = [
+    ("Standard", TabPFNClassifier.create_default_for_version(ModelVersion.V3_5)),
+    ("Thinking, no group_col", TabPFNClassifier.create_default_for_version(
+        ModelVersion.V3_5, thinking_effort="high", thinking_metric="log_loss")),
+    ("Thinking + group_col", TabPFNClassifier.create_default_for_version(
+        ModelVersion.V3_5, thinking_effort="high", thinking_metric="log_loss",
+        group_col=GROUP)),
+    ("Thinking + group_col (f1_macro)", TabPFNClassifier.create_default_for_version(
+        ModelVersion.V3_5, thinking_effort="high", thinking_metric="f1_macro",
+        group_col=GROUP)),
+]
+for name, model in models:
+    # Only grouped Thinking receives the wilderness area column.
+    Xtr = X_train if model.group_col else X_train.drop(columns=GROUP)
+    Xte = X_test if model.group_col else X_test.drop(columns=GROUP)
+    result = evaluate(model, Xtr, Xte, y_train, y_test)
+    forest_rows.append({"Model": name, **result})
+    print(f"{name}: log-loss {result['Log-loss']:.4f}, macro F1 {result['Macro F1']:.4f}")
+
+forest_results = pd.DataFrame(forest_rows).set_index("Model")
+display(forest_results.round(4))
 ```
 
 ```console
-Fold 0, Standard: log-loss 0.7729
-Fold 0, Thinking + group_col: log-loss 0.7636
-Fold 1, Standard: log-loss 0.6991
-Fold 1, Thinking + group_col: log-loss 0.6913
-Fold 2, Standard: log-loss 0.7970
-Fold 2, Thinking + group_col: log-loss 0.7469
-Model  Standard  Thinking + group_col
-Fold
-0        0.7729                0.7636
-1        0.6991                0.6913
-2        0.7970                0.7469
+Standard: log-loss 0.7414, macro F1 0.5578
+Thinking, no group_col: log-loss 0.8446, macro F1 0.5329
+Thinking + group_col: log-loss 0.6881, macro F1 0.4913
+Thinking + group_col (f1_macro): log-loss 0.6814, macro F1 0.4728
+                                 Log-loss  Macro F1   Seconds
+Model
+Standard                           0.7414    0.5578   15.4947
+Thinking, no group_col             0.8446    0.5329  588.5521
+Thinking + group_col               0.6881    0.4913  167.6216
+Thinking + group_col (f1_macro)    0.6814    0.4728  168.3973
 ```
 
-### Results on unseen mice
+### Results on the unseen area
 
-Bars show mean log-loss across the three folds; dots show individual folds.
+Left: log-loss, which the first three Thinking fits optimise. Right: macro F1,
+which the last fit optimises.
 
 ```python
-order = ["Standard", "Thinking + group_col"]
-mice_summary = mice_results.groupby("Model")[["Log-loss", "Seconds"]].mean().reindex(order)
-display(mice_summary.round(4))
-
-fig, ax = plt.subplots(figsize=(9, 3.8))
-scores = mice_summary["Log-loss"]
-bars = ax.barh(order, scores, color=["#b0bec5", "#7B1FA2"], height=0.55)
-ax.bar_label(bars, fmt="%.4f", padding=6)
-for position, name in enumerate(order):
-    values = mice_results.loc[mice_results.Model == name, "Log-loss"]
-    ax.scatter(values, np.full(len(values), position + 0.18), color="#263238", s=24,
-               zorder=3, label="Individual fold" if position == 0 else None)
-ax.set_xlim(0, mice_results["Log-loss"].max() * 1.2)
-ax.set(xlabel="Multiclass log-loss (lower is better)",
-       title="Mice protein expression: generalization to unseen animals")
-ax.invert_yaxis()
-ax.legend(frameon=False, loc="lower right")
+colors = ["#b0bec5", "#ce93d8", "#7B1FA2", "#4A148C"]
+fig, axes = plt.subplots(1, 2, figsize=(12, 3.8), sharey=True)
+for ax, metric, fmt in zip(axes, ["Log-loss", "Macro F1"], ["%.4f", "%.4f"]):
+    scores = forest_results[metric]
+    bars = ax.barh(scores.index, scores, color=colors, height=0.55)
+    ax.bar_label(bars, fmt=fmt, padding=6)
+    ax.set_xlim(0, scores.max() * 1.25)
+    ax.set_xlabel(f"{metric} ({'lower' if metric == 'Log-loss' else 'higher'} is better)")
+axes[0].invert_yaxis()
+fig.suptitle("Forest cover type: generalization to an unseen wilderness area")
 fig.tight_layout()
 plt.show()
 ```
 
-```console
-                      Log-loss  Seconds
-Model
-Standard                0.7563   3.6083
-Thinking + group_col    0.7339  11.4407
-```
+![Forest cover results](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/experiment_with_thinking_mode/covertype-results.png)
 
-![Mice protein results](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/experiment_with_thinking_mode/mice-results.png)
-
-Thinking with `group_col="MouseID"` changes mean log-loss from **0.7563 to 0.7339** across the three folds, a **3.0% reduction**.
+Thinking with `group_col` changes log-loss from **0.7414 to 0.6881** on the unseen
+area, 7% lower. Thinking without the group column is worse than standard TabPFN
+(**0.8446**): it optimized for the two training areas and generalized worse to the
+third. Macro F1 moves the other way for every Thinking fit, and optimizing
+`f1_macro` directly does not recover it (0.4728): the calibrated probabilities
+transfer to the new area, but the hard labels for the rare Krummholz class do
+not. On grouped data, judge Thinking on the probability metric it optimizes,
+and check label metrics on held-out groups before relying on them.
 
 ## Takeaways
 
 - Set `thinking_metric` to match your task.
-- For grouped data, use `group_col` and retain it at prediction time.
-- Evaluate on held-out data; for repeated observations, hold out whole groups.
+- For grouped data, use `group_col` and retain it at prediction time. Without it,
+  Thinking can optimize for the groups it was trained on and generalize worse.
+- Evaluate on held-out data; for grouped data, hold out whole groups.
