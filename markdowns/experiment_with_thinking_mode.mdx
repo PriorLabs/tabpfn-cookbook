@@ -187,6 +187,9 @@ version, which keeps three cover types and three wilderness areas and provides
 splits that hold out entire wilderness areas. Rows from the same area share
 climate and terrain, so this is grouped data: a model that generalizes to a new
 area is more useful than one that interpolates within the areas it was trained on.
+The target is not constant within an area; every area contains all three cover
+types, so predictions and scores stay at the row level. The group only decides
+which rows must be held out together.
 Credit: Blackard (1998), CC BY 4.0.
 
 ```python
@@ -213,9 +216,11 @@ print(f"{len(forest):,} cells, {forest.Wilderness_Area.nunique()} wilderness are
 
 ### Evaluate on an unseen wilderness area
 
-The published fold trains on two wilderness areas and tests on the third. The
-full fold is large, so we take a stratified sample of 50,000 training cells and
-20,000 test cells, keeping the areas disjoint.
+The published fold trains on two wilderness areas and tests on the third. A random
+row split would leak: neighbouring cells from the same area would land on both
+sides, and the score would reward memorizing each area's terrain rather than
+generalizing to a new one. The full fold is large, so we take a stratified sample
+of 50,000 training cells and 20,000 test cells, keeping the areas disjoint.
 
 ```python
 forest_train = forest.iloc[forest_train_idx]
@@ -244,7 +249,11 @@ Test   20000                 Comanche Peak Wilderness Area
 ### Pass the group column
 
 For grouped data, use Thinking with `group_col="Wilderness_Area"` and keep that
-column in both training and prediction DataFrames. We compare four models on the
+column in both training and prediction DataFrames. Thinking uses the column for
+its own fit-time validation: rows of one area are never split between its internal
+training and validation sets, so it optimizes for unseen areas instead of unseen
+rows. That internal validation is separate from the outer holdout above, which
+Thinking never sees. We compare four models on the
 same held-out area: standard TabPFN, Thinking without the group column, Thinking
 with it, and Thinking with it optimising macro F1 instead of log-loss, to show how
 the choice of `thinking_metric` changes what improves. Soil descriptors are ordinal-encoded; the wilderness area is
@@ -269,6 +278,9 @@ y_train = encoder.transform(forest_train["Cover_Type"].astype(str))
 y_test = encoder.transform(forest_test["Cover_Type"].astype(str))
 
 forest_rows = []
+# group_col tells Thinking which rows belong together, so its internal validation
+# holds out whole wilderness areas. Without it, Thinking validates on random rows
+# from the training areas, which leaks terrain across the split.
 models = [
     ("Standard", TabPFNClassifier.create_default_for_version(ModelVersion.V3_5)),
     ("Thinking, no group_col", TabPFNClassifier.create_default_for_version(
