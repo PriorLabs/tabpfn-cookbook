@@ -84,6 +84,7 @@ from tabpfn_client import TabPFNClassifier
 
 plt.rcParams.update({"figure.dpi": 120, "axes.spines.top": False,
                      "axes.spines.right": False})
+pd.set_option("display.width", 150)
 ```
 
 ## The data
@@ -149,6 +150,11 @@ plan a campaign size.
 BUDGETS = [0.01, 0.05, 0.10, 0.20]
 
 
+def formatted(frame, formats):
+    """Format columns as text, so tables read the same in a notebook and on a static page."""
+    return frame.apply(lambda col: col.map(formats[col.name].format) if col.name in formats else col)
+
+
 def fit_and_score(model):
     """Fit on the training customers and return held-out scores and fit minutes."""
     started = time.perf_counter()
@@ -200,10 +206,6 @@ below is mostly uploading 133,000 rows.
 scores, minutes = {}, {}
 scores["Base model"], minutes["Base model"] = fit_and_score(TabPFNClassifier(random_state=0))
 print(f"Base model: fit {minutes['Base model']:.1f} min")
-```
-
-```console
-Base model: fit 0.2 min
 ```
 
 ## Baseline: XGBoost
@@ -306,13 +308,30 @@ split, other assumptions or a real campaign would move it.
 
 ```python
 campaigns = campaign_table(scores, y_test, BUDGETS, CONTACT_COST, TRANSACTION_VALUE)
-display(campaigns.style.format({
+display(formatted(campaigns, {
     "Contacted": "{:,}", "Transactors captured": "{:,}", "Precision": "{:.1%}",
     "Lift": "{:.2f}", "Net value (€)": "€{:,.0f}", "Opportunity cost (€)": "€{:,.0f}"}))
 ```
 
 ```console
-<pandas.io.formats.style.Styler at 0x11feaa180>
+                                    Contacted Transactors captured Precision  Lift Net value (€) Opportunity cost (€)
+Budget Model
+1%     Base model                         667                  612     91.8%  9.13       €59,866               €2,700
+       XGBoost                            667                  617     92.5%  9.21       €60,366               €2,200
+       Thinking (roc_auc)                 667                  636     95.4%  9.49       €62,266                 €300
+       Thinking (average_precision)       667                  639     95.8%  9.53       €62,566                   €0
+5%     Base model                       3,333                2,462     73.9%  7.35      €239,534              €15,700
+       XGBoost                          3,333                2,423     72.7%  7.23      €235,634              €19,600
+       Thinking (roc_auc)               3,333                2,606     78.2%  7.78      €253,934               €1,300
+       Thinking (average_precision)     3,333                2,619     78.6%  7.82      €255,234                   €0
+10%    Base model                       6,667                3,795     56.9%  5.66      €366,166              €18,500
+       XGBoost                          6,667                3,691     55.4%  5.51      €355,766              €28,900
+       Thinking (roc_auc)               6,667                3,980     59.7%  5.94      €384,666                   €0
+       Thinking (average_precision)     6,667                3,972     59.6%  5.93      €383,866                 €800
+20%    Base model                      13,333                5,088     38.2%  3.80      €482,134              €19,600
+       XGBoost                         13,333                4,964     37.2%  3.71      €469,734              €32,000
+       Thinking (roc_auc)              13,333                5,284     39.6%  3.94      €501,734                   €0
+       Thinking (average_precision)    13,333                5,281     39.6%  3.94      €501,434                 €300
 ```
 
 Thinking produces the highest simulated value at every campaign budget. The two Thinking objectives are within a handful of transactors of each other at every budget, for example 639 and 636 in the top 1%, so neither objective has a meaningful edge here.
@@ -344,13 +363,18 @@ for name, score in scores.items():
                  "Planned fraction": planned / len(score),
                  "Planned net value (€)": net[planned - 1] if planned else 0.0})
 decisions = pd.DataFrame(rows).set_index("Model")
-display(decisions.style.format({"Best fraction": "{:.1%}", "Planned fraction": "{:.1%}",
-                                "Best net value (€)": "€{:,.0f}",
-                                "Planned net value (€)": "€{:,.0f}"}))
+display(formatted(decisions, {"Best fraction": "{:.1%}", "Planned fraction": "{:.1%}",
+                              "Best net value (€)": "€{:,.0f}",
+                              "Planned net value (€)": "€{:,.0f}"}))
 ```
 
 ```console
-<pandas.io.formats.style.Styler at 0x11f0118e0>
+                             Best fraction Best net value (€) Planned fraction Planned net value (€)
+Model
+Base model                           53.4%           €569,206            61.6%              €568,128
+XGBoost                              59.5%           €564,148            91.4%              €546,994
+Thinking (roc_auc)                   50.0%           €571,144            55.0%              €570,602
+Thinking (average_precision)         52.6%           €571,056            57.3%              €570,636
 ```
 
 The left panel is a gains curve: contact the top x% of the ranked list, and the
@@ -424,8 +448,8 @@ The probability-based plans come close to those hindsight optima. They reach €
 Move the sliders to set your own
 value per transaction and cost per contact: the simulated net value, the
 opportunity cost of each model and the net value curve update when you release a
-slider. The sliders need a running notebook, in Colab, Jupyter or VS Code; on a
-static page you see only the code.
+slider. The sliders need a running notebook: open this notebook in Colab, Jupyter or VS
+Code to use them. On this page you see only the code.
 
 These values compare model rankings under illustrative assumptions; they do not estimate causal campaign impact.
 
@@ -434,16 +458,16 @@ def explore(transaction_value, contact_cost):
     table = campaign_table(scores, y_test, BUDGETS, contact_cost, transaction_value)
     budgets, models = [f"{b:.0%}" for b in BUDGETS], list(scores)
     print(f"Break-even precision: {contact_cost / transaction_value:.1%} of contacted customers")
-    display(table["Net value (€)"].unstack("Model").loc[budgets, models].style
-            .format("€{:,.0f}").set_caption("Simulated net value at each budget"))
-    display(table["Opportunity cost (€)"].unstack("Model").loc[budgets, models].style
-            .format("€{:,.0f}").set_caption("Opportunity cost: gap to the best model at the same budget"))
+    euros = {name: "€{:,.0f}" for name in models}
+    print("Simulated net value at each budget")
+    display(formatted(table["Net value (€)"].unstack("Model").loc[budgets, models], euros))
+    print("Opportunity cost: gap to the best model at the same budget")
+    display(formatted(table["Opportunity cost (€)"].unstack("Model").loc[budgets, models], euros))
     optima = {name: net_value_curve(score, y_test, contact_cost, transaction_value)
               for name, score in scores.items()}
     display(pd.DataFrame({"Best fraction": {n: (net.argmax() + 1) / len(net) for n, net in optima.items()},
                           "Best net value (€)": {n: net.max() for n, net in optima.items()}})
-            .style.format({"Best fraction": "{:.1%}", "Best net value (€)": "€{:,.0f}"})
-            .set_caption("Optimal campaign size"))
+            .pipe(formatted, {"Best fraction": "{:.1%}", "Best net value (€)": "€{:,.0f}"}))
     fig, ax = plt.subplots(figsize=(10, 4.5))
     plot_net_value(ax, contact_cost, transaction_value, legend=True)
     fig.tight_layout()
