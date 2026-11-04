@@ -81,6 +81,7 @@ from sklearn.metrics import average_precision_score, log_loss, roc_auc_score
 
 from xgboost import XGBClassifier
 from tabpfn_client import TabPFNClassifier
+from tabpfn_client.api_models import ModelVersion
 
 plt.rcParams.update({"figure.dpi": 120, "axes.spines.top": False,
                      "axes.spines.right": False})
@@ -199,12 +200,17 @@ def campaign_table(scores, y_true, budgets, contact_cost, transaction_value):
 
 ## Base model: TabPFN 3.5
 
+Every TabPFN model in this notebook is pinned to TabPFN 3.5 with
+`create_default_for_version`, so Thinking and the base model share the same checkpoint
+and a change in the API's default model does not change the comparison.
+
 On the API the fit itself takes a few seconds; the time
 below is mostly uploading 133,000 rows.
 
 ```python
 scores, minutes = {}, {}
-scores["Base model"], minutes["Base model"] = fit_and_score(TabPFNClassifier(random_state=0))
+scores["Base model"], minutes["Base model"] = fit_and_score(
+    TabPFNClassifier.create_default_for_version(ModelVersion.V3_5, random_state=0))
 print(f"Base model: fit {minutes['Base model']:.1f} min")
 ```
 
@@ -243,7 +249,8 @@ EFFORT = "micro"
 
 for metric in ["roc_auc", "average_precision"]:
     name = f"Thinking ({metric})"
-    model = TabPFNClassifier(random_state=0, thinking_effort=EFFORT, thinking_metric=metric)
+    model = TabPFNClassifier.create_default_for_version(
+        ModelVersion.V3_5, random_state=0, thinking_effort=EFFORT, thinking_metric=metric)
     scores[name], minutes[name] = fit_and_score(model)
     print(f"{name}: fit {minutes[name]:.1f} min")
 ```
