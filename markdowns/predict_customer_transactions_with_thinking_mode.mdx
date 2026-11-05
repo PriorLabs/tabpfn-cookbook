@@ -1,8 +1,7 @@
 ---
 title: Target the Right Customers with Thinking Mode
 description: Rank 200,000 bank customers by how likely they are to transact, then
-  decide how many to contact by weighing the cost of a contact against the value of
-  a transaction.
+  compare the simulated value of campaigns at selected budgets.
 cookbookTags:
 - thinking mode
 - api
@@ -38,21 +37,21 @@ kind of transaction in the coming period. It is important for the bank to put th
 right customers at the top of a list, because the list is what the business acts on. A campaign
 reaches the first 1%, 5% or 20% of it, and everyone further down is never contacted.
 
-This creates two practical decisions: how to rank customers and how many of them the campaign should contact.
+The practical question is which model produces the best list for the campaign budgets the bank selects.
 
-This notebook fits an XGBoost baseline and the base TabPFN 3.5 model on the
+This notebook fits an XGBoost baseline and TabPFN-3.5 on the
 [Santander Customer Transaction Prediction](https://www.kaggle.com/c/santander-customer-transaction-prediction)
-dataset, then runs Thinking mode twice, once optimizing ROC AUC and once average
-precision. It compares the four models the way a campaign would: by how many
-transactors each list reaches at fixed contact budgets, and by the net value of a
-simulated campaign at every size.
+dataset, then runs TabPFN-3.5-Thinking twice, once optimizing ROC AUC and once
+average precision. It compares the four models the way a campaign would: by how many
+transactors each list reaches at selected campaign budgets, and by the simulated net
+value of a campaign at each of those budgets.
 
 ## Setup
 
 Install the client, XGBoost and the other dependencies. In Colab, add `TABPFN_TOKEN` to Secrets; elsewhere, use your usual client authentication.
 
 ```python
-%pip install -q --upgrade tabpfn-client==0.7.1 pandas==2.3.3 numpy==2.5.3 scikit-learn==1.9.0 matplotlib==3.11.2 pyarrow==25.0.1 huggingface-hub==1.31.0 xgboost==3.4.1 ipywidgets==8.1.5
+%pip install -q --upgrade tabpfn-client==0.7.1 pandas==2.3.3 numpy==2.5.3 scikit-learn==1.9.0 matplotlib==3.11.2 pyarrow==25.0.1 huggingface-hub==1.31.0 xgboost==3.4.1
 ```
 
 ```python
@@ -71,7 +70,6 @@ import json
 import time
 from pathlib import Path
 
-import ipywidgets as widgets
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -131,8 +129,8 @@ print(f"{len(X_train):,} training customers; {len(X_test):,} held-out customers;
 ## What to measure
 
 A campaign does not act on the whole ranking. It contacts the top of it, down to a
-budget, so we evaluate every model at four budgets: the top 1%, 5%, 10% and 20% of
-customers. At each budget we report:
+budget, so we evaluate every model at four selected campaign budgets: the top 1%, 5%,
+10% and 20% of customers. At each budget we report:
 
 - **Customers contacted** and **transactors captured**, as counts.
 - **Precision**: the share of contacted customers who transact.
@@ -144,8 +142,7 @@ customers. At each budget we report:
 We also report ROC AUC, average precision, and log-loss. **ROC AUC**, the dataset's own
 objective, measures ranking quality everywhere. **Average precision** weights the
 top of the list, where campaigns operate. **Log-loss** measures whether the
-probabilities are calibrated, which matters further down, where we use them to
-plan a campaign size.
+probabilities are calibrated.
 
 ```python
 BUDGETS = [0.01, 0.05, 0.10, 0.20]
@@ -172,13 +169,6 @@ def list_metrics(score, y_true):
             "Log-loss": log_loss(y_true, score)}
 
 
-def net_value_curve(score, y_true, contact_cost, transaction_value):
-    """Simulated net value of contacting the top k customers of the ranking, for every k."""
-    order = np.argsort(-score)
-    contacted = np.arange(1, len(order) + 1)
-    return transaction_value * np.cumsum(y_true[order]) - contact_cost * contacted
-
-
 def campaign_table(scores, y_true, budgets, contact_cost, transaction_value):
     """Simulated campaign at each budget for every model, with the gap to the best model."""
     rows = []
@@ -198,10 +188,10 @@ def campaign_table(scores, y_true, budgets, contact_cost, transaction_value):
     return table.set_index(["Budget", "Model"])
 ```
 
-## Base model: TabPFN 3.5
+## TabPFN-3.5
 
-Every TabPFN model in this notebook is pinned to TabPFN 3.5 with
-`create_default_for_version`, so Thinking and the base model share the same checkpoint
+Every TabPFN model in this notebook is pinned to TabPFN-3.5 with
+`create_default_for_version`, so TabPFN-3.5 and TabPFN-3.5-Thinking share the same checkpoint
 and a change in the API's default model does not change the comparison.
 
 On the API the fit itself takes a few seconds; the time
@@ -209,9 +199,13 @@ below is mostly uploading 133,000 rows.
 
 ```python
 scores, minutes = {}, {}
-scores["Base model"], minutes["Base model"] = fit_and_score(
+scores["TabPFN-3.5"], minutes["TabPFN-3.5"] = fit_and_score(
     TabPFNClassifier.create_default_for_version(ModelVersion.V3_5, random_state=0))
-print(f"Base model: fit {minutes['Base model']:.1f} min")
+print(f"TabPFN-3.5: fit {minutes['TabPFN-3.5']:.1f} min")
+```
+
+```console
+TabPFN-3.5: fit 0.2 min
 ```
 
 ## Baseline: XGBoost
@@ -229,12 +223,12 @@ print(f"XGBoost: fit {minutes['XGBoost']:.1f} min")
 ```
 
 ```console
-XGBoost: fit 0.5 min
+XGBoost: fit 0.2 min
 ```
 
-## Thinking mode with two objectives
+## TabPFN-3.5-Thinking with two objectives
 
-Thinking changes what happens at fit time. Instead of a single forward pass, the
+Thinking mode changes what happens at fit time. Instead of a single forward pass, the
 server runs an optimization over the training data against the metric named in
 `thinking_metric`, then serves the result for every later prediction. We compare
 roc_auc with average_precision to test whether optimizing for the top of the
@@ -242,13 +236,13 @@ ranking improves small campaigns. `"roc_auc"` rewards a good ranking everywhere 
 the list; `"average_precision"` rewards getting the top of the list right, which is
 the only part a small campaign ever sees.
 
-We fit one model for each objective using the same "micro" effort level. thinking_effort controls the fit-time optimization budget; available levels depend on the client version and account access. On this dataset, each "micro" fit takes approximately 5.7 minutes.
+We fit one model for each objective using the same "micro" effort level. thinking_effort controls the fit-time optimization budget; available levels depend on the client version and account access. On this dataset, each "micro" fit takes approximately 5 minutes.
 
 ```python
 EFFORT = "micro"
 
 for metric in ["roc_auc", "average_precision"]:
-    name = f"Thinking ({metric})"
+    name = f"TabPFN-3.5-Thinking ({metric})"
     model = TabPFNClassifier.create_default_for_version(
         ModelVersion.V3_5, random_state=0, thinking_effort=EFFORT, thinking_metric=metric)
     scores[name], minutes[name] = fit_and_score(model)
@@ -256,8 +250,8 @@ for metric in ["roc_auc", "average_precision"]:
 ```
 
 ```console
-Thinking (roc_auc): fit 5.7 min
-Thinking (average_precision): fit 5.7 min
+TabPFN-3.5-Thinking (roc_auc): fit 5.7 min
+TabPFN-3.5-Thinking (average_precision): fit 5.7 min
 ```
 
 ## Ranking quality
@@ -269,14 +263,48 @@ display(summary.round(4))
 ```
 
 ```console
-                              ROC AUC  Avg precision  Log-loss  Fit minutes
-Base model                     0.8951         0.6025    0.2058       0.2414
-XGBoost                        0.8872         0.5880    0.2261       0.5111
-Thinking (roc_auc)             0.9074         0.6477    0.1950       5.6969
-Thinking (average_precision)   0.9074         0.6477    0.1951       5.6823
+                                         ROC AUC  Avg precision  Log-loss  Fit minutes
+TabPFN-3.5                                0.8951         0.6025    0.2058       0.2037
+XGBoost                                   0.8872         0.5880    0.2261       0.1777
+TabPFN-3.5-Thinking (roc_auc)             0.9074         0.6477    0.1950       5.6721
+TabPFN-3.5-Thinking (average_precision)   0.9074         0.6477    0.1951       5.6737
 ```
 
-Both Thinking objectives produce the same whole-list results: ROC AUC 0.9074 and average precision 0.6477, compared with 0.8951 and 0.6025 for the base model. XGBoost trails both TabPFN variants, with ROC AUC 0.8872 and average precision 0.5880. Relative to base TabPFN, Thinking increases average precision from 0.6025 to 0.6477.
+The chart puts the table on a common scale: each bar is a model's improvement over
+XGBoost, in percent. For log-loss, where lower is better, the bar is the reduction.
+
+```python
+# Prior Labs palette: grey for XGBoost, Prior Blue for TabPFN-3.5, navy for Thinking.
+colors = {"XGBoost": "#9CA3AF", "TabPFN-3.5": "#4E5FFD",
+          "TabPFN-3.5-Thinking (roc_auc)": "#101075",
+          "TabPFN-3.5-Thinking (average_precision)": "#A5AEFE"}
+
+reference = summary.loc["XGBoost"]
+improvement = pd.DataFrame({
+    "ROC AUC": summary["ROC AUC"] / reference["ROC AUC"] - 1,
+    "Avg precision": summary["Avg precision"] / reference["Avg precision"] - 1,
+    "Log-loss reduction": 1 - summary["Log-loss"] / reference["Log-loss"],
+}).drop(index="XGBoost")
+
+fig, ax = plt.subplots(figsize=(10, 4.5))
+width = 0.8 / len(improvement)
+positions = np.arange(len(improvement.columns))
+for k, (name, row) in enumerate(improvement.iterrows()):
+    bars = ax.bar(positions + (k - (len(improvement) - 1) / 2) * width, row * 100, width * 0.9,
+                  label=name, color=colors[name])
+    ax.bar_label(bars, labels=[f"{v:+.1%}" for v in row], padding=2, fontsize=8)
+ax.axhline(0, color="#90a4ae", linewidth=1)
+ax.set_xticks(positions, improvement.columns)
+ax.yaxis.set_major_formatter(lambda y, _: f"{y:g}%")
+ax.set(ylabel="Improvement over XGBoost", title="Whole-list metrics relative to XGBoost")
+ax.legend(frameon=False, loc="upper left")
+fig.tight_layout()
+plt.show()
+```
+
+![Ranking quality](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/predict_customer_transactions_with_thinking_mode/plot-01.png)
+
+Both TabPFN-3.5-Thinking objectives produce the same whole-list results: ROC AUC 0.9074 and average precision 0.6477, compared with 0.8951 and 0.6025 for TabPFN-3.5. XGBoost trails all TabPFN variants, with ROC AUC 0.8872 and average precision 0.5880. Relative to TabPFN-3.5, TabPFN-3.5-Thinking increases average precision from 0.6025 to 0.6477.
 
 ## Campaign assumptions
 
@@ -306,13 +334,6 @@ TRANSACTION_VALUE = 100.0  # assumed value of one transaction, in euros
 CONTACT_COST = 2.0         # assumed cost of one contact, in euros
 ```
 
-## Simulated campaigns at each budget
-
-The last column is an **opportunity cost**: how much less net value a model's list
-produces than the best list at the same budget on these held-out customers. It is
-the gap between two simulated campaigns, not a proven financial loss. A different
-split, other assumptions or a real campaign would move it.
-
 ```python
 campaigns = campaign_table(scores, y_test, BUDGETS, CONTACT_COST, TRANSACTION_VALUE)
 display(formatted(campaigns, {
@@ -321,190 +342,118 @@ display(formatted(campaigns, {
 ```
 
 ```console
-                                    Contacted Transactors captured Precision  Lift Net value (€) Opportunity cost (€)
+                                               Contacted Transactors captured Precision  Lift Net value (€) Opportunity cost (€)
 Budget Model
-1%     Base model                         667                  612     91.8%  9.13       €59,866               €2,700
-       XGBoost                            667                  617     92.5%  9.21       €60,366               €2,200
-       Thinking (roc_auc)                 667                  636     95.4%  9.49       €62,266                 €300
-       Thinking (average_precision)       667                  639     95.8%  9.53       €62,566                   €0
-5%     Base model                       3,333                2,462     73.9%  7.35      €239,534              €15,700
-       XGBoost                          3,333                2,423     72.7%  7.23      €235,634              €19,600
-       Thinking (roc_auc)               3,333                2,606     78.2%  7.78      €253,934               €1,300
-       Thinking (average_precision)     3,333                2,619     78.6%  7.82      €255,234                   €0
-10%    Base model                       6,667                3,795     56.9%  5.66      €366,166              €18,500
-       XGBoost                          6,667                3,691     55.4%  5.51      €355,766              €28,900
-       Thinking (roc_auc)               6,667                3,980     59.7%  5.94      €384,666                   €0
-       Thinking (average_precision)     6,667                3,972     59.6%  5.93      €383,866                 €800
-20%    Base model                      13,333                5,088     38.2%  3.80      €482,134              €19,600
-       XGBoost                         13,333                4,964     37.2%  3.71      €469,734              €32,000
-       Thinking (roc_auc)              13,333                5,284     39.6%  3.94      €501,734                   €0
-       Thinking (average_precision)    13,333                5,281     39.6%  3.94      €501,434                 €300
+1%     TabPFN-3.5                                    667                  612     91.8%  9.13       €59,866               €2,700
+       XGBoost                                       667                  617     92.5%  9.21       €60,366               €2,200
+       TabPFN-3.5-Thinking (roc_auc)                 667                  636     95.4%  9.49       €62,266                 €300
+       TabPFN-3.5-Thinking (average_precision)       667                  639     95.8%  9.53       €62,566                   €0
+5%     TabPFN-3.5                                  3,333                2,462     73.9%  7.35      €239,534              €15,700
+       XGBoost                                     3,333                2,423     72.7%  7.23      €235,634              €19,600
+       TabPFN-3.5-Thinking (roc_auc)               3,333                2,606     78.2%  7.78      €253,934               €1,300
+       TabPFN-3.5-Thinking (average_precision)     3,333                2,619     78.6%  7.82      €255,234                   €0
+10%    TabPFN-3.5                                  6,667                3,795     56.9%  5.66      €366,166              €18,500
+       XGBoost                                     6,667                3,691     55.4%  5.51      €355,766              €28,900
+       TabPFN-3.5-Thinking (roc_auc)               6,667                3,980     59.7%  5.94      €384,666                   €0
+       TabPFN-3.5-Thinking (average_precision)     6,667                3,972     59.6%  5.93      €383,866                 €800
+20%    TabPFN-3.5                                 13,333                5,088     38.2%  3.80      €482,134              €19,600
+       XGBoost                                    13,333                4,964     37.2%  3.71      €469,734              €32,000
+       TabPFN-3.5-Thinking (roc_auc)              13,333                5,284     39.6%  3.94      €501,734                   €0
+       TabPFN-3.5-Thinking (average_precision)    13,333                5,281     39.6%  3.94      €501,434                 €300
 ```
 
-Thinking produces the highest simulated value at every campaign budget. The two Thinking objectives are within a handful of transactors of each other at every budget, for example 639 and 636 in the top 1%, so neither objective has a meaningful edge here.
+TabPFN-3.5-Thinking produces the highest simulated value at every campaign budget. The two TabPFN-3.5-Thinking objectives are within a handful of transactors of each other at every budget, for example 639 and 636 in the top 1%, so neither objective has a meaningful edge here.
 
-At the 10% budget, Thinking with ROC-AUC optimization produces €384,666 in simulated value, compared with €366,166 for base TabPFN and €355,766 for XGBoost. Under these assumptions, XGBoost’s opportunity cost is €28,900. At 20%, that gap grows to €32,000.
+At the 10% budget, TabPFN-3.5-Thinking with ROC-AUC optimization produces €384,666 in simulated value, compared with €366,166 for TabPFN-3.5 and €355,766 for XGBoost. Under these assumptions, XGBoost’s opportunity cost is €28,900. At 20%, that gap grows to €32,000.
 
-## The optimal campaign size
+## The value of following TabPFN-3.5-Thinking
 
-The net value curve rises while each extra contact is more likely than the
-break-even rate to transact, and falls once it is less likely. Its peak is the
-economically optimal contact fraction under the assumptions above.
+What does the better ranking add up to? Each bar shows simulated net-value uplift
+relative to XGBoost at the same campaign budget: how much more a campaign that
+contacts the top of the model's list is worth than the same campaign run from
+XGBoost's list. We use the ROC AUC run of TabPFN-3.5-Thinking; the average precision
+run is within a few transactors of it.
 
-On the held-out set we can read the peak off the realized outcomes. Before a real
-campaign the outcomes are unknown, so a team has to plan the size from the model's
-own probabilities: contact every customer whose predicted chance of transacting is
-above cost ÷ value. The table shows both. The gap between the planned and the best
-campaign is what imperfect calibration costs.
+TabPFN-3.5-Thinking's campaign is worth 6.8–8.1% more than XGBoost's at the 5%, 10%
+and 20% budgets, compared with 1.7–2.9% for TabPFN-3.5. At the top 20% that is
+€501,734 against €469,734 for XGBoost. These figures cover the 66,667 held-out
+customers, a third of the customer base, and assume the same €100 value and €2
+cost per contact as above.
 
 ```python
-break_even = CONTACT_COST / TRANSACTION_VALUE
-rows = []
-for name, score in scores.items():
-    net = net_value_curve(score, y_test, CONTACT_COST, TRANSACTION_VALUE)
-    best = net.argmax()
-    planned = int((score > break_even).sum())
-    rows.append({"Model": name,
-                 "Best fraction": (best + 1) / len(score),
-                 "Best net value (€)": net[best],
-                 "Planned fraction": planned / len(score),
-                 "Planned net value (€)": net[planned - 1] if planned else 0.0})
-decisions = pd.DataFrame(rows).set_index("Model")
-display(formatted(decisions, {"Best fraction": "{:.1%}", "Planned fraction": "{:.1%}",
-                              "Best net value (€)": "€{:,.0f}",
-                              "Planned net value (€)": "€{:,.0f}"}))
-```
+models = ["XGBoost", "TabPFN-3.5", "TabPFN-3.5-Thinking (roc_auc)"]
+net = campaigns["Net value (€)"].unstack("Model").loc[["5%", "10%", "20%"], models]
+uplift = net[models[1:]].div(net["XGBoost"], axis=0) - 1
 
-```console
-                             Best fraction Best net value (€) Planned fraction Planned net value (€)
-Model
-Base model                           53.4%           €569,206            61.6%              €568,128
-XGBoost                              59.5%           €564,148            91.4%              €546,994
-Thinking (roc_auc)                   50.0%           €571,144            55.0%              €570,602
-Thinking (average_precision)         52.6%           €571,056            57.3%              €570,636
-```
-
-The left panel is a gains curve: contact the top x% of the ranked list, and the
-curve shows what share of all transactors you reach, with the four budgets marked.
-The right panel is net value against campaign size, with each model's optimum
-marked. Both dotted lines are a random list.
-
-```python
-styles = {"XGBoost": {"color": "#00897B", "linestyle": "-."},
-          "Base model": {"color": "#546E7A", "linestyle": "--"},
-          "Thinking (roc_auc)": {"color": "#7B1FA2", "linestyle": "-"},
-          "Thinking (average_precision)": {"color": "#E07B00", "linestyle": "-"}}
-contacted = np.arange(1, len(y_test) + 1) / len(y_test)
-
-
-def plot_net_value(ax, contact_cost, transaction_value, legend=False):
-    """Simulated net value against campaign size, with each model's optimum marked.
-
-    The x axis runs to twice the largest optimum, so the profitable region stays readable.
-    """
-    curves = {name: net_value_curve(score, y_test, contact_cost, transaction_value) / 1000
-              for name, score in scores.items()}
-    random_net = (transaction_value * y_test.mean() - contact_cost) * np.arange(1, len(y_test) + 1) / 1000
-    x_max = min(1.0, max(0.2, 2 * max(contacted[net.argmax()] for net in curves.values())))
-    visible = contacted <= x_max
-    for name, net in curves.items():
-        best = net.argmax()
-        ax.plot(contacted, net, linewidth=2, label=name, **styles[name])
-        ax.plot(contacted[best], net[best], "o", markersize=8,
-                color=styles[name]["color"], markeredgecolor="white", markeredgewidth=2)
-    ax.plot(contacted, random_net, color="#263238", linestyle=":", linewidth=1, label="Random")
-    ax.axhline(0, color="#90a4ae", linewidth=1, zorder=0)
-    low = min(0, *(net[visible].min() for net in curves.values()))
-    high = max(net[visible].max() for net in curves.values())
-    ax.set_ylim(low - 0.05 * (high - low), high + 0.08 * (high - low))
-    ax.set_xlim(0, x_max)
-    ax.xaxis.set_major_formatter(lambda x, _: f"{x * 100:g}%")
-    ax.set(xlabel="Share of customers contacted", ylabel="Simulated net value (thousand €)",
-           title=f"€{transaction_value:g} per transaction, €{contact_cost:g} per contact")
-    if legend:
-        ax.legend(frameon=False, loc="upper left", bbox_to_anchor=(1.02, 1), fontsize=9)
-
-fig, (gains, value) = plt.subplots(1, 2, figsize=(12, 4.5))
-for name, score in scores.items():
-    order = np.argsort(-score)
-    gains.plot(contacted, np.cumsum(y_test[order]) / y_test.sum(), linewidth=2,
-               label=name, **styles[name])
-gains.plot([0, 1], [0, 1], color="#263238", linestyle=":", linewidth=1, label="Random")
-for budget in BUDGETS:
-    gains.axvline(budget, color="#cfd8dc", linewidth=1, zorder=0)
-gains.set_xlim(0, 0.3)
-gains.set_ylim(0, 1)
-gains.xaxis.set_major_formatter(lambda x, _: f"{x:.0%}")
-gains.yaxis.set_major_formatter(lambda y, _: f"{y:.0%}")
-gains.set(xlabel="Share of customers contacted", ylabel="Share of transactors reached",
-          title="Gains curve, budgets marked")
-gains.legend(frameon=False, loc="lower right")
-plot_net_value(value, CONTACT_COST, TRANSACTION_VALUE)
+fig, ax = plt.subplots(figsize=(10, 4.5))
+width = 0.8 / len(uplift.columns)
+positions = np.arange(len(uplift))
+for k, name in enumerate(uplift.columns):
+    bars = ax.bar(positions + (k - (len(uplift.columns) - 1) / 2) * width, uplift[name] * 100,
+                  width * 0.9, label=name, color=colors[name])
+    ax.bar_label(bars, labels=[f"{v:+.1%}" for v in uplift[name]], padding=2, fontsize=8)
+ax.axhline(0, color="#90a4ae", linewidth=1)
+ax.set_xticks(positions, [f"Top {b}" for b in uplift.index])
+ax.yaxis.set_major_formatter(lambda y, _: f"{y:g}%")
+ax.set(xlabel="Campaign budget", ylabel="Net-value uplift over XGBoost",
+       title="Simulated net-value uplift relative to XGBoost")
+ax.set_ylim(0, uplift.max().max() * 100 * 1.25)
+ax.legend(frameon=False, loc="upper left", ncol=2)
 fig.tight_layout()
 plt.show()
 ```
 
-![The optimal campaign size](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/predict_customer_transactions_with_thinking_mode/plot-01.png)
+![The value of following TabPFN-3.5-Thinking](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/predict_customer_transactions_with_thinking_mode/plot-02.png)
 
-With a €100 transaction value and €2 contact cost, the realized net-value curves of the two Thinking models peak after contacting 50–53% of customers. Their maximum values are almost identical: €571,144 for ROC-AUC optimization and €571,056 for average-precision optimization.
-
-The probability-based plans come close to those hindsight optima. They reach €570,602 and €570,636 respectively, less than €550 below the best possible value on the held-out outcomes. XGBoost’s planned campaign is much larger—91.4% of customers—and produces €546,994, €17,154 below its own hindsight optimum. This reflects its weaker probability estimates as well as its weaker ranking.
-
-## Try your own assumptions
-
-Move the sliders to set your own
-value per transaction and cost per contact: the simulated net value, the
-opportunity cost of each model and the net value curve update when you release a
-slider. The sliders need a running notebook: open this notebook in Colab, Jupyter or VS
-Code to use them. On this page you see only the code.
-
-These values compare model rankings under illustrative assumptions; they do not estimate causal campaign impact.
+To illustrate why even a relatively small model improvement can matter at scale, we
+extrapolate the held-out results to a portfolio of two million customers. Under the
+same assumptions, TabPFN-3.5-Thinking would generate approximately €867,000 more
+simulated net value than XGBoost at a 10% campaign budget. The extrapolation is
+linear: it assumes the wider portfolio looks like the held-out customers.
 
 ```python
-def explore(transaction_value, contact_cost):
-    table = campaign_table(scores, y_test, BUDGETS, contact_cost, transaction_value)
-    budgets, models = [f"{b:.0%}" for b in BUDGETS], list(scores)
-    print(f"Break-even precision: {contact_cost / transaction_value:.1%} of contacted customers")
-    euros = {name: "€{:,.0f}" for name in models}
-    print("Simulated net value at each budget")
-    display(formatted(table["Net value (€)"].unstack("Model").loc[budgets, models], euros))
-    print("Opportunity cost: gap to the best model at the same budget")
-    display(formatted(table["Opportunity cost (€)"].unstack("Model").loc[budgets, models], euros))
-    optima = {name: net_value_curve(score, y_test, contact_cost, transaction_value)
-              for name, score in scores.items()}
-    display(pd.DataFrame({"Best fraction": {n: (net.argmax() + 1) / len(net) for n, net in optima.items()},
-                          "Best net value (€)": {n: net.max() for n, net in optima.items()}})
-            .pipe(formatted, {"Best fraction": "{:.1%}", "Best net value (€)": "€{:,.0f}"}))
-    fig, ax = plt.subplots(figsize=(10, 4.5))
-    plot_net_value(ax, contact_cost, transaction_value, legend=True)
-    fig.tight_layout()
-    plt.show()
+PORTFOLIO = 2_000_000
+portfolio = net * PORTFOLIO / len(y_test)
+gap = portfolio.loc["10%", "TabPFN-3.5-Thinking (roc_auc)"] - portfolio.loc["10%", "XGBoost"]
+print(f"Extra value over XGBoost at a 10% budget, {PORTFOLIO:,} customers: €{gap:,.0f}")
 
-
-slider_style = {"description_width": "initial"}
-widgets.interact(
-    explore,
-    transaction_value=widgets.FloatSlider(
-        value=TRANSACTION_VALUE, min=10, max=500, step=10, description="Value per transaction (€)",
-        continuous_update=False, style=slider_style),
-    contact_cost=widgets.FloatSlider(
-        value=CONTACT_COST, min=0.5, max=50, step=0.5, description="Cost per contact (€)",
-        continuous_update=False, style=slider_style),
-);
+fig, ax = plt.subplots(figsize=(10, 4.5))
+width = 0.8 / len(models)
+positions = np.arange(len(portfolio))
+for k, name in enumerate(models):
+    bars = ax.bar(positions + (k - (len(models) - 1) / 2) * width, portfolio[name] / 1e6, width * 0.9,
+                  label=name, color=colors[name])
+    ax.bar_label(bars, labels=[f"€{v / 1e6:.1f}M" for v in portfolio[name]], padding=2, fontsize=8)
+ax.set_xticks(positions, [f"Top {b}" for b in portfolio.index])
+ax.set(xlabel="Campaign budget", ylabel="Simulated net value (million €)",
+       title=f"Simulated campaign value for {PORTFOLIO / 1e6:g} million customers")
+ax.legend(frameon=False, loc="upper left")
+fig.tight_layout()
+plt.show()
 ```
+
+```console
+Extra value over XGBoost at a 10% budget, 2,000,000 customers: €866,996
+```
+
+![The value of following TabPFN-3.5-Thinking](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/predict_customer_transactions_with_thinking_mode/plot-03.png)
 
 ## What this means for targeting
 
-Thinking ranks customers better than base TabPFN and XGBoost at every budget, so it is the better list to target from. The choice of Thinking objective made no practical difference on this dataset: ROC AUC and average precision optimization give the same results within a few transactors.
+TabPFN-3.5-Thinking captures more transactors and produces the highest simulated net value at all four tested campaign budgets. At a 10% budget, it produces €384,666 on the 66,667 held-out customers: €18,500 more than TabPFN-3.5 and €28,900 more than XGBoost.
 
-Increasing contact cost or reducing transaction value raises the break-even precision and moves the optimal campaign toward a smaller, higher-confidence group.
+The Thinking objective makes little practical difference in this experiment. Optimizing ROC AUC or average precision changes the number of captured transactors by no more than 13 at any tested budget. Here, most of the improvement comes from using Thinking rather than selecting between these two objectives.
 
-This remains a propensity-based simulation. It assumes every contacted transactor contributes the full transaction value, although some would have transacted without being contacted.
+At larger scale, a small per-customer improvement can become material. If the held-out results scaled linearly to two million customers, the 10% campaign would produce approximately €867,000 more simulated value with Thinking than with XGBoost.
+
+This extrapolation assumes the same transaction rate, model performance, €100 transaction value, and €2 contact cost. It is a propensity-based simulation, not an estimate of causal campaign impact.
 
 ## Takeaways
 
-- Thinking outperforms XGBoost and base TabPFN across the tested campaign budgets.
+- TabPFN-3.5-Thinking produces the highest simulated campaign value at every tested budget.
 
-- At a 10% budget, Thinking produces €28,900 more simulated value than XGBoost under the €100-value and €2-cost assumptions.
+- At a 10% budget, Thinking adds €18,500 over TabPFN-3.5 and €28,900 over XGBoost on the held-out customers.
 
-- Thinking delivered nearly identical gains with ROC AUC and average precision as its objective. On this dataset, enabling Thinking mattered more than choosing between the two objectives.
+- Under the same assumptions, the advantage over XGBoost would correspond to approximately €867,000 across a two-million-customer portfolio.
+
+- ROC AUC and average-precision optimization give nearly identical results here; enabling Thinking matters more than choosing between the two objectives.
