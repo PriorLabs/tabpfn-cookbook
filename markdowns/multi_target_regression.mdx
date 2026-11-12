@@ -50,7 +50,7 @@ We first build intuition on a small toy example. Then we compare the three metho
 Install the TabPFN client and the usual scientific Python stack. TabPFN runs on Prior Labs' servers through the API.
 
 ```python
-%pip install -q --upgrade tabpfn-client scikit-learn scipy pandas matplotlib
+%pip install -q --upgrade tabpfn-client==0.7.1 scikit-learn==1.9.0 scipy==1.18.1 pandas==2.3.3 numpy==2.5.4 matplotlib==3.11.2
 ```
 
 ```python
@@ -408,7 +408,9 @@ We use two small multi-target datasets from the ScoringBench multivariate list, 
 
 **Weather in Ankara** ([OpenML 42368](https://www.openml.org/d/42368)). 321 days of weather measurements. The targets are the day's **minimum temperature**, **maximum temperature** and **dew point** (the temperature at which dew forms, a measure of humidity), all converted to °C. The inputs are the other measurements of the same day: precipitation, air pressure, visibility and wind speed. Like ScoringBench, we drop the mean temperature (it would give the answer away) and the maximum wind speed. The minimum temperature is never above the maximum temperature, so this dataset can also show us how often each method produces impossible days.
 
-**Skin lesions** ([OpenML 46630](https://www.openml.org/d/46630), from the PAD-UFES-20 dataset). Patient information and symptoms for skin lesions photographed with smartphones. The two targets are the lesion's two **diameters** in mm. The inputs include age, skin type, body region, the diagnosis and symptoms such as itching or bleeding. We keep the 1,494 lesions with both diameters and drop the identifier columns. Some patients have several lesions, so we **split by patient**: all lesions of one patient are either in the training data or in the test data, never in both.
+**Skin lesions** ([OpenML 46630](https://www.openml.org/d/46630), from the PAD-UFES-20 dataset). Patient information and symptoms for skin lesions photographed with smartphones. The two targets are the lesion's two **diameters** in mm. The inputs include age, skin type, body region, the diagnosis and symptoms such as itching or bleeding. We keep the 1,494 images with both diameters (one row per image) and drop the identifier columns.
+
+**Why we split by patient.** The rows are not independent. The 1,494 images come from 1,134 lesions and 794 patients. 314 lesions were photographed more than once, and these repeat rows have exactly the same diameters. Many inputs, such as age, skin type and family history, are also the same for every row of a patient. With a random row split, a copy of a test lesion would often be in the training data, and the model could simply look up its diameters: the score would look much better than it would be for a new patient. So we use `GroupKFold` with `patient_id` as the group: all rows of one patient are either in the training data or in the test data, never in both. The inner split that fits the copula correlation is grouped in the same way. Only the split uses the patient: the model still trains and predicts one row (one image) at a time, and the scores are averaged over rows.
 
 We evaluate each dataset with 5-fold cross-validation: every row is a test row exactly once, predicted by models that never saw it.
 
@@ -427,8 +429,12 @@ skin_X = skin.drop(columns=skin_targets + ["patient_id", "lesion_id", "img_id"])
 datasets = {
     "Weather (Ankara)": dict(X=weather_X, Y=weather_Y, names=weather_targets, groups=None,
                              splitter=KFold(5, shuffle=True, random_state=0)),
-    "Skin lesions": dict(X=skin_X, Y=skin_Y, names=skin_targets, groups=skin["patient_id"],
-                         splitter=GroupKFold(5, shuffle=True, random_state=0)),
+    # Split by patient: repeat images of one lesion share its diameters,
+    # so a random row split would leak test answers into training.
+    "Skin lesions": dict(
+        X=skin_X, Y=skin_Y, names=skin_targets, groups=skin["patient_id"],
+        splitter=GroupKFold(5, shuffle=True, random_state=0),
+    ),
 }
 for name, ds in datasets.items():
     print(f"{name}: {len(ds['X'])} rows, {ds['X'].shape[1]} inputs, targets {ds['names']}")
