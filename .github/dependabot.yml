@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # Actions are pinned to commit SHAs; this keeps each SHA and its version comment current.
+  # The cooldown gives a compromised release time to be yanked before we take it.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns: ["*"]
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
