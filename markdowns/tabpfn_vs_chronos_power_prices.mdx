@@ -1,5 +1,5 @@
 ---
-title: Forecast Day-ahead Power Prices with TabPFN-TS
+title: 'TabPFN-3.5 vs Chronos-2: Day-ahead Power Prices'
 description: Forecast tomorrow's 24 hourly EPEX-DE prices with TabPFN-TS through the
   API, and compare with Chronos-2
 icon: bolt
@@ -9,7 +9,7 @@ cookbookTags:
 authors:
 - name: Paul Egorov
   linkedin: https://www.linkedin.com/in/paul-egorov/
-colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/forecast_day_ahead_power_prices.ipynb
+colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/tabpfn_vs_chronos_power_prices.ipynb
 ---
 {/* cookbook-meta:start process_markdown.py */}
 <div className="cookbook-meta">
@@ -23,7 +23,7 @@ colab_url: https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/bl
 {/* cookbook-authors:end process_markdown.py */}
 {/* cookbook-colab:start process_markdown.py */}
 <div className="cookbook-colab">
-  <a href="https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/forecast_day_ahead_power_prices.ipynb" className="cookbook-colab-button" target="_blank" rel="noopener noreferrer">
+  <a href="https://colab.research.google.com/github/PriorLabs/tabpfn-cookbook/blob/main/notebooks/tabpfn_vs_chronos_power_prices.ipynb" className="cookbook-colab-button" target="_blank" rel="noopener noreferrer">
     <svg className="cookbook-colab-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="#F9AB00" d="M16.9414 4.9757a7.033 7.033 0 0 0-4.9308 2.0646 7.033 7.033 0 0 0-.1232 9.8068l2.395-2.395a3.6455 3.6455 0 0 1 5.1497-5.1478l2.397-2.3989a7.033 7.033 0 0 0-4.8877-1.9297zM7.07 4.9855a7.033 7.033 0 0 0-4.8878 1.9316l2.3911 2.3911a3.6434 3.6434 0 0 1 5.0227.1271l1.7341-2.9737-.0997-.0802A7.033 7.033 0 0 0 7.07 4.9855zm15.0093 2.1721l-2.3892 2.3911a3.6455 3.6455 0 0 1-5.1497 5.1497l-2.4067 2.4068a7.0362 7.0362 0 0 0 9.9456-9.9476zM1.932 7.1674a7.033 7.033 0 0 0-.002 9.6816l2.397-2.397a3.6434 3.6434 0 0 1-.004-4.8916zm7.664 7.4235c-1.38 1.3816-3.5863 1.411-5.0168.1134l-2.397 2.395c2.4693 2.3328 6.263 2.5753 9.0072.5455l.1368-.1115z"/></svg>
     <span className="cookbook-colab-label">Open in Colab</span>
   </a>
@@ -110,13 +110,13 @@ plt.show()
 52,416 hours from 2012-01-09 to 2017-12-31; test: 84 days
 ```
 
-![Data](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/forecast_day_ahead_power_prices/plot-01.png)
+![Data](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn_vs_chronos_power_prices/plot-01.png)
 
 ### How the backtest works
 
 We replay 84 trading days. For each delivery day, both models see only what a trader knows at the auction the day before, and nothing is trained: each forecast reads the history directly.
 
-![How the backtest works: for each delivery day, the models see prices up to 23:00 the day before and the load and wind+solar forecasts for the delivery day](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/forecast_day_ahead_power_prices/backtest.png)
+![How the backtest works: for each delivery day, the models see prices up to 23:00 the day before and the load and wind+solar forecasts for the delivery day](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn_vs_chronos_power_prices/backtest.png)
 
 No features are built by hand; TabPFN-TS creates its own (see the [tabpfn-time-series](https://github.com/PriorLabs/tabpfn-time-series) repo).
 
@@ -275,7 +275,7 @@ ax.spines[["top", "right", "left"]].set_visible(False)
 plt.show()
 ```
 
-![Accuracy](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/forecast_day_ahead_power_prices/plot-02.png)
+![Accuracy](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn_vs_chronos_power_prices/plot-02.png)
 
 The bands come from the same fit as the point forecast: TabPFN predicts a full distribution for every hour, so any quantile is available at no extra cost (see the [predictive distribution cookbook](https://docs.priorlabs.ai/cookbook/predictive_distribution)). Below: the week of 23–29 October, when strong wind pushed prices below zero, with the 10–90% and 30–70% quantile bands.
 
@@ -293,7 +293,7 @@ for ax, (model, q) in zip(axes, FORECASTS.items()):
 plt.show()
 ```
 
-![Accuracy](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/forecast_day_ahead_power_prices/plot-03.png)
+![Accuracy](https://raw.githubusercontent.com/PriorLabs/tabpfn-cookbook/main/visuals/tabpfn_vs_chronos_power_prices/plot-03.png)
 
 ```python
 sunday = "2017-10-29"

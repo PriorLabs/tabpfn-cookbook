@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draw the backtest diagram of the forecast_day_ahead_power_prices cookbook.
+"""Draw the backtest diagram of the tabpfn_vs_chronos_power_prices cookbook.
 
 Run: uv run --with matplotlib --with pandas python scripts/draw_day_ahead_backtest_diagram.py
 """
@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "visuals" / "forecast_day_ahead_power_prices" / "backtest.png"
+OUTPUT = ROOT / "visuals" / "tabpfn_vs_chronos_power_prices" / "backtest.png"
 
 BLUE, RED, GREEN, ORANGE = "#4E79A7", "#E15759", "#59A14F", "#F28E2B"
 GREY, INK, MUTED = "#BBBBBB", "#333333", "#777777"
